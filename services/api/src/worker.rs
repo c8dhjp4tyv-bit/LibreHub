@@ -209,6 +209,17 @@ impl Supervisor {
         if final_record.status == BuildStatus::Cancelled {
             self.remove_artifacts(id).await?;
         }
+        self.store
+            .append(
+                id,
+                BuildLogEntry {
+                    sequence: 0,
+                    timestamp: Utc::now(),
+                    stream: LogStream::System,
+                    message: format!("Build finished: {:?}", final_record.status).to_lowercase(),
+                },
+            )
+            .await?;
         if cleanup_failed {
             anyhow::bail!("Container cleanup failed for build {id}; stopping the supervisor");
         }

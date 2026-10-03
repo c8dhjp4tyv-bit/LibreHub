@@ -73,6 +73,7 @@ async fn executes_cli_captures_streams_and_preserves_bundle() {
     let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
     let create: Vec<String> = serde_json::from_str(calls.lines().next().unwrap()).unwrap();
     assert!(create.contains(&"--cap-drop=ALL".into()));
+    assert!(create.contains(&"--security-opt=systempaths=unconfined".into()));
     assert!(create.contains(&"--user=10001:10001".into()));
     assert!(
         !create

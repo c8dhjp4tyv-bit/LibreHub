@@ -28,6 +28,12 @@ No privileged mode, host PID namespace, host networking or SYS_ADMIN is used.
 
 Bubblewrap needs nested unprivileged user/mount namespaces. M1 disables Docker's
 seccomp and AppArmor profiles **for workers only** to support these namespaces.
+Workers also need an unmasked procfs for nested PID namespace mounts: Docker uses
+`systempaths=unconfined`; a CLI named `podman` uses `unmask=/proc/*`. Docker's setting
+also relaxes its default read-only system paths. This does not grant capabilities
+or share the host PID namespace, but removes another default kernel-facing guard.
+See [Moby's rootless container guidance](https://github.com/moby/buildkit/blob/master/docs/rootless.md)
+and [Podman's unmask option](https://docs.podman.io/en/latest/markdown/podman-run.1.html).
 This weakens the container boundary and exposes more of the shared host kernel.
 Containers are not sufficient isolation for a hostile multi-tenant public build
 service. Run M1 on a dedicated disposable machine; do not place credentials or
@@ -65,7 +71,8 @@ umask (for example `umask 077`) if manifests/logs may contain confidential data.
 ## Resource and recovery limits
 
 HTTP body, manifest depth, queue, log rows/bytes, artifact bytes and build duration
-have explicit caps. Streaming continues after the log quota to avoid pipe deadlock.
+have explicit caps. YAML anchors/aliases are rejected before deserialization,
+with depth and token-count limits to prevent expansion attacks. Streaming continues after the log quota to avoid pipe deadlock.
 Logs include arbitrary compiler text; clients must escape it before HTML display.
 Retention and aggregate database/artifact capacity remain manual. A worker can
 fill its writable layer before exporting an artifact: container memory limits do

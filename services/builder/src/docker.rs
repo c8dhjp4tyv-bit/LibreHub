@@ -153,6 +153,19 @@ impl DockerExecutor {
                 .context("Cannot set copied manifest permissions")?;
         }
         let name = Self::name(job.id);
+        // A partially masked procfs cannot be remounted from a nested user namespace.
+        // Docker and Podman expose different switches for the same worker requirement.
+        let system_paths = if self
+            .config
+            .binary
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("podman")
+        {
+            "--security-opt=unmask=/proc/*"
+        } else {
+            "--security-opt=systempaths=unconfined"
+        };
         let args: Vec<String> = [
             "create",
             "--name",
@@ -166,6 +179,7 @@ impl DockerExecutor {
             // bubblewrap needs nested unprivileged namespaces. No SYS_ADMIN or privileged mode.
             "--security-opt=seccomp=unconfined",
             "--security-opt=apparmor=unconfined",
+            system_paths,
             "--pids-limit=512",
             "--memory=4g",
             "--memory-swap=4g",
@@ -572,6 +586,7 @@ mod tests {
     fn rejects_links_unexpected_paths_and_oversize() {
         for (name, kind, limit) in [
             ("application.flatpak", tar::EntryType::Symlink, 100),
+            ("application.flatpak", tar::EntryType::Link, 100),
             ("application.flatpak", tar::EntryType::GNULongName, 100),
             ("application.flatpak", tar::EntryType::XHeader, 100),
             ("etc/passwd", tar::EntryType::Regular, 100),

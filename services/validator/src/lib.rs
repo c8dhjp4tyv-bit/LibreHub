@@ -30,6 +30,15 @@ pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, 
             errors,
         });
     }
+    if matches!(format, ManifestFormat::Yaml)
+        && let Err((code, message)) = check_yaml_structure(input)
+    {
+        error(&mut errors, "$", code, &message);
+        return Err(ValidationResult {
+            valid: false,
+            errors,
+        });
+    }
     let parsed = match format {
         ManifestFormat::Json => serde_json::from_str::<Value>(input).map_err(|e| e.to_string()),
         ManifestFormat::Yaml => serde_yaml_ng::from_str::<Value>(input).map_err(|e| e.to_string()),
@@ -133,6 +142,45 @@ pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, 
         valid: false,
         errors,
     })
+}
+
+// Scan before deserialization: aliases can expand tiny YAML into unbounded object graphs.
+fn check_yaml_structure(input: &str) -> Result<(), (&'static str, String)> {
+    use yaml_rust2::scanner::{Scanner, TokenType};
+    let mut scanner = Scanner::new(input.chars());
+    let mut depth = 0_usize;
+    let mut count = 0;
+    for token in scanner.by_ref() {
+        count += 1;
+        if count > 50_000 {
+            return Err(("too_complex", "YAML exceeds 50,000 tokens".into()));
+        }
+        match token.1 {
+            TokenType::Alias(_) | TokenType::Anchor(_) => {
+                return Err((
+                    "yaml_alias_unsupported",
+                    "YAML anchors and aliases are unsupported; use inline definitions".into(),
+                ));
+            }
+            TokenType::BlockSequenceStart
+            | TokenType::BlockMappingStart
+            | TokenType::FlowSequenceStart
+            | TokenType::FlowMappingStart => {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return Err(("too_deep", "Manifest nesting exceeds 32 levels".into()));
+                }
+            }
+            TokenType::BlockEnd | TokenType::FlowSequenceEnd | TokenType::FlowMappingEnd => {
+                depth = depth.saturating_sub(1)
+            }
+            _ => {}
+        }
+    }
+    if let Some(error) = scanner.get_error() {
+        return Err(("invalid_syntax", error.to_string()));
+    }
+    Ok(())
 }
 
 pub fn valid_app_id(id: &str) -> bool {
@@ -551,5 +599,23 @@ mod tests {
                 .iter()
                 .any(|e| e.code == "too_deep")
         );
+    }
+    #[test]
+    fn rejects_yaml_alias_expansion_and_excessive_nesting() {
+        let aliases = "a: &a [x, x]\nb: [*a, *a]\n";
+        assert_eq!(
+            validate(aliases, ManifestFormat::Yaml).unwrap_err().errors[0].code,
+            "yaml_alias_unsupported"
+        );
+        let deeply_nested = format!("{}0{}", "[".repeat(40), "]".repeat(40));
+        assert_eq!(
+            validate(&deeply_nested, ManifestFormat::Yaml)
+                .unwrap_err()
+                .errors[0]
+                .code,
+            "too_deep"
+        );
+        // Quoted shell syntax is a scalar, not a YAML alias.
+        assert!(check_yaml_structure("commands: ['echo *', 'echo &']").is_ok());
     }
 }

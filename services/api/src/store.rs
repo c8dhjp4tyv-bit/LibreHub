@@ -13,7 +13,7 @@ use std::{
 
 pub const MAX_LOG_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_LOG_ENTRIES: u64 = 10_000;
-const MAX_PENDING: i64 = 64;
+pub const MAX_PENDING_BUILDS: usize = 64;
 
 #[derive(Clone)]
 pub struct Store {
@@ -85,7 +85,7 @@ impl Store {
                 [],
                 |r| r.get(0),
             )?;
-            if pending >= MAX_PENDING {
+            if pending >= MAX_PENDING_BUILDS as i64 {
                 return Err(QueueFull.into());
             }
             let now = Utc::now();
