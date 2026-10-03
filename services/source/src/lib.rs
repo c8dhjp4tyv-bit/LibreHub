@@ -21,6 +21,19 @@ pub const MAX_FILES: usize = 4096;
 pub const MAX_CANDIDATES: usize = 64;
 pub const MAX_GIT_BYTES: u64 = 128 * 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(120);
+// Own the entire Git/helper group even if an outer timeout or shutdown drops
+// the operation before its ordinary cleanup runs.
+struct ProcessGroup(Option<u32>);
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{code}")]
 pub struct SourceError {
@@ -360,14 +373,16 @@ impl GitSource {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
-                libc::setpgid(0, 0);
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
         let mut child = command
             .spawn()
             .map_err(|_| SourceError::new("source_subsystem_unavailable"))?;
-        let pid = child.id();
+        let group = ProcessGroup(child.id());
         let mut stdout = child
             .stdout
             .take()
@@ -413,12 +428,7 @@ impl GitSource {
         let result = tokio::time::timeout(DEADLINE, operation)
             .await
             .unwrap_or_else(|_| Err(SourceError::transient("source_fetch_timeout")));
-        #[cfg(unix)]
-        if let Some(pid) = pid {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
+        drop(group);
         if result.is_err() {
             let _ = child.kill().await;
         }
@@ -861,6 +871,40 @@ fn check_local_membership(modules: &[Module], files: &BTreeMap<String, Vec<u8>>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_terminates_the_entire_process_group() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60").kill_on_drop(true);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        // This group member is independently owned; dropping the operation's
+        // group guard must terminate it without dropping its Child handle.
+        let group = ProcessGroup(child.id());
+        let operation = async move {
+            let _group = group;
+            std::future::pending::<()>().await;
+        };
+        let mut operation = Box::pin(operation);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut operation)
+                .await
+                .is_err()
+        );
+        drop(operation);
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!status.success());
+    }
     fn repo(url: &str) -> ProjectSource {
         ProjectSource {
             provider: RepositoryProvider::Git,
