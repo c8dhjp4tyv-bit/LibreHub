@@ -1,0 +1,9 @@
+[package]
+name = "librehub-validator"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+librehub-common.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+yaml-rust2 = { version = "0.13", default-features = false }

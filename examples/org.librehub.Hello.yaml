@@ -1,0 +1,16 @@
+app-id: org.librehub.Hello
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: hello
+modules:
+  - name: hello
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 hello.sh /app/bin/hello
+    sources:
+      - type: inline
+        dest-filename: hello.sh
+        contents: |
+          #!/bin/sh
+          echo 'Hello from LibreHub!'
