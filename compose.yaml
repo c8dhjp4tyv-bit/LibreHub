@@ -1,0 +1,13 @@
+# Provision the worker image. The API runs on the host so no container gets the Docker socket.
+services:
+  worker-image:
+    image: librehub-worker:m1
+    build:
+      context: .
+      dockerfile: infra/docker/worker.Dockerfile
+    user: '10001:10001'
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/bin/sh, -c]
+    command: ['flatpak-builder --version && flatpak --version']
