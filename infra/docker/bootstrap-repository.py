@@ -5,12 +5,13 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 
 os.umask(0o077)
 state = Path('/state')
 public = Path('/repositories')
-host = Path('/host-output')
+host = Path('/host-output/dev')
 for directory in [state, public, host, state / 'gnupg', state / 'builds']:
     directory.mkdir(parents=True, exist_ok=True)
 base = os.environ.get('LIBREHUB_PUBLIC_BASE_URL', 'http://localhost:8090').rstrip('/')
@@ -73,6 +74,9 @@ owner = int(os.environ.get('LIBREHUB_DEV_UID', '1000'))
 group = int(os.environ.get('LIBREHUB_DEV_GID', '1000'))
 for file in host.iterdir():
     os.chown(file, owner, group)
+os.chown(host, owner, group)
+os.chown(host.parent, owner, group)
+host.parent.chmod(0o755)
 # Repositories and trust files are public; nginx must be able to traverse/read them.
 for root, dirs, files in os.walk(public):
     Path(root).chmod(0o755)
@@ -82,13 +86,13 @@ for root, dirs, files in os.walk(public):
 export LIBREHUB_FLAT_MANAGER_TOKEN_FILE='{host.resolve() / "publisher.token"}'
 export LIBREHUB_SIGNING_PUBLIC_KEY_FILE='{host.resolve() / "repository.gpg"}'
 export LIBREHUB_SIGNING_FINGERPRINT={fingerprint}
-export LIBREHUB_PUBLIC_BASE_URL={base}
+export LIBREHUB_PUBLIC_BASE_URL={shlex.quote(base)}
 ''')
 # Replace container paths by the caller's absolute host directory without shell interpolation.
 host_path = os.environ.get('LIBREHUB_HOST_OUTPUT', '')
 if not host_path or any(c in host_path for c in "'\n\r"):
     raise SystemExit('LIBREHUB_HOST_OUTPUT must be a safe absolute host directory')
 env_file = host / 'publisher.env'
-env_file.write_text(env_file.read_text().replace('/host-output', host_path))
+env_file.write_text(env_file.read_text().replace('/host-output/dev', host_path))
 os.chown(env_file, owner, group)
 print('Development repositories initialized; signing key stays in the trusted manager volume.')

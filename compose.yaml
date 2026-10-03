@@ -28,7 +28,7 @@ services:
     volumes:
       - manager-state:/state
       - repository-data:/repositories
-      - ./data/dev:/host-output
+      - ./data:/host-output
     command: [python3, /usr/local/lib/librehub/bootstrap-repository.py]
   flat-manager:
     image: librehub-flat-manager:m2
