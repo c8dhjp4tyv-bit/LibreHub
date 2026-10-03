@@ -151,3 +151,16 @@ SIGKILLs the API after real backend acceptance during preparing, uploading, comm
 and publishing, restarts the API four times, and requires exactly one correlated
 remote build after recovery. It never
 disables GPG verification. CI uploads its JSON installation evidence.
+
+## M3 owned builds and automation
+
+The executable requires publishes:read/write and build ownership for every M2
+API. Operator-only historical unowned jobs require an offline-issued operator
+scope. Project auto-publication queues through the same M2 admission/integrity,
+journal and publisher path. Successful exact-commit builds can publish beta or
+stable according to the event's snapshotted per-project policy. Admission and
+publisher claim both verify the current project remains active with the same
+policy version/channel. A changed policy cancels queued automatic publication;
+claimed M2 work retains its existing side-effect/cancellation boundary. Manual
+owner-authorized publication remains available for historical successful builds.
+See [developer-platform.md](developer-platform.md) for explicit race semantics.

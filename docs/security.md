@@ -3,14 +3,14 @@
 M1 is intended for a trusted development operator on a dedicated Linux build host.
 Manifest build commands execute arbitrary code. Validation improves developer
 feedback and blocks obvious unsafe configuration; it is not a complete security
-policy. Authentication, per-user authorization/quotas, scanning and hardened VM
-isolation belong to later milestones (including M5). Keep the unauthenticated API
-on localhost, or provide authentication and admission controls at a trusted gateway.
+policy. M3 supplies bearer authentication, project/build ownership and bounded developer
+admission. Scanning and hardened VM isolation remain later milestones (including
+M5). Keep the API on a dedicated host with TLS/gateway rate and egress controls.
 
 ## Container boundary
 
 Each job runs as UID/GID 10001 in a fresh container. No host directories are mounted.
-Only normalized manifest data is copied in; only the regular bundle file is copied
+Normalized manifest data and, for M3 project builds, rehashed regular source files are copied in; only the regular bundle file is copied
 out. Containers receive no host environment variables, SSH keys, GitHub tokens,
 signing keys, host `/home`, or Docker socket. The image's `/home/builder` is private
 container content containing runtime tooling, not a mounted host home.
@@ -50,7 +50,7 @@ Host configuration must be evaluated by the operator.
 
 UUID job IDs are parsed before filesystem use. Manifest IDs and destination paths
 are validated; no arbitrary request paths reach the host. Only self-contained
-inline modules are supported. Local files/includes, filesystem finish grants,
+inline modules are supported. Standalone M1 local files/includes, filesystem finish grants,
 build-args, BaseApps and runtime/extension builds are rejected. Remote file/archive
 sources require HTTPS URLs without credentials and SHA-256 checksums. Shell/build
 commands remain intentionally executable code inside the container.
@@ -126,11 +126,44 @@ nonterminal publications and 1–8 active workers are permitted. Same ref releas
 are serialized. Retryable/uncertain side effects are reconciled against persistent
 remote state, never assumed rolled back.
 
-Publishing is an unauthenticated operator capability in M2. Keep all host ports
-on localhost or enforce authentication/authorization at a trusted gateway. A
+M3 protects publishing with bearer scopes and source build ownership. Keep host
+ports on localhost during development and use TLS/gateway controls for exposure. A
 host account able to access the Docker daemon or modify the SQLite/data/config
 files is already inside the trusted boundary; path checks do not defend against
 an actively malicious administrator swapping directories concurrently. Production
 signing provisioning, backup, rotation and scoped token policy must replace the
 explicitly development-only Compose bootstrap. See
 [repository.md](repository.md) and [publishing.md](publishing.md) for details.
+
+## M3 attack-surface review
+
+API tokens are 256-bit random, persisted as SHA-256 only, compared in constant time,
+scoped/revocable and removed from headers before downstream handlers. Offline
+bootstrap cannot be invoked through HTTP. Every project path and existing
+build/publication path checks ownership; foreign IDs return 404. Scope delegation
+cannot add privilege. No secret wrapper reveals values through Debug.
+
+Git repository URLs are parsed/normalized, restricted to anonymous public HTTPS
+smart HTTP, DNS-validated and pinned with redirects/proxies disabled. A narrow
+relay denies dumb HTTP and alternate repository URL attacks. Bare Git starts with
+no inherited credentials/config/templates, no hooks/helpers/filters/submodules or
+unsafe protocols, finite process resources, deadlines and bounded data. Git is a
+native parser inside the trusted source boundary: keep it patched and apply host
+quotas. Source snapshots reject links/special files/traversal, have finite file/byte
+caps, deterministic archives and independent digests rechecked before container
+copy. The checkout never sees API/publisher/signing credentials.
+
+Webhooks verify HMAC over bounded bytes before JSON, validate repository identity
+and durable delivery UUID uniqueness, snapshot policy and enqueue without fetching
+inside HTTP. Secrets are AEAD encrypted and rotatable with atomic admission checks.
+No timestamp is fabricated for GitHub; retained delivery identities protect retries.
+Atomic event/build ownership handoff prevents duplicate builds during recovery.
+Auto-publication compares admitted/current project policy at admission and claim;
+settings changes cannot undo an already claimed remote publication.
+
+Source event/project/token/delivery/audit limits bound admission/history. Aggregate
+storage retention and rate controls for public HTTP remain operator deployment
+requirements. These are infrastructure boundaries, not a claim of full hostile
+multi-tenant container security. M4 catalog work is explicitly excluded. Detailed
+configuration, limitations and regression evidence are in authentication.md,
+source-integration.md, webhooks.md and m3-verification.md.

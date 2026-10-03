@@ -17,7 +17,7 @@ docker compose up -d --build
 sh scripts/wait-repository-bootstrap.sh
 # After bootstrap exits successfully:
 . data/dev/publisher.env
-cargo run -p librehub-api
+cargo run -p librehub-api --bin librehub-api
 ```
 
 Compose builds the native M1 worker image and the pinned manager. PostgreSQL uses
@@ -104,7 +104,7 @@ encrypted backups, restricted filesystem permissions and a documented rotation
 procedure. Do not reuse the development identity, passphrase-free key, PostgreSQL
 password or token secret. No API endpoint accepts a private key. Builders never
 receive the key store or manager credentials. Keep the publishing API behind a
-trusted gateway; developer authentication/ownership checks remain deferred.
+trusted gateway; M3 adds developer authentication and owned-build publication checks.
 
 The bootstrap also generates a random manager JWT signing secret inside its
 private state volume. It invokes upstream `flat-manager-client gentoken` to issue
