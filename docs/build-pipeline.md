@@ -64,9 +64,19 @@ happens when building the trusted image, not through arbitrary manifest remotes.
 Remote source downloads need explicit bridge networking; runtime changes require
 an image rebuild. Missing runtimes produce a failed build with stderr explaining why.
 
-The temporary per-build OSTree export is an internal Flatpak build step. **M2**
-will add flat-manager, public OSTree publication, signing, `.flatpakrepo` generation
-and public installation from LibreHub; none is implemented in M1.
+The worker's temporary OSTree export remains internal to bundle creation. M2
+uses the retained bundle as a bounded handoff: the trusted publisher verifies the
+recorded hash/size/path, imports a private copy with `flatpak build-import-bundle`,
+checks the exact ref and metadata with OSTree, then streams archive-z2 objects to
+flat-manager. This avoids exposing a general worker directory-tree extraction
+interface. M1 builds and historical successful bundle records remain compatible.
+
+A publish request creates a separate durable job linked to the source build.
+flat-manager stages the objects/ref, commits and signs them, publishes to stable
+or beta, and refreshes summary metadata. LibreHub verifies the resulting served
+summary and commit with the distributed public key before reporting success.
+The `.flatpakrepo` descriptor then enables standard clients to install the app.
+See [publishing.md](publishing.md) for the complete protocol and recovery rules.
 
 References: [Flatpak Builder](https://docs.flatpak.org/en/latest/flatpak-builder.html),
 [builder options](https://docs.flatpak.org/en/latest/flatpak-builder-command-reference.html),

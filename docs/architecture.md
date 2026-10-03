@@ -1,6 +1,6 @@
-# M1 architecture
+# LibreHub architecture
 
-The workspace has four Rust crates. `common` owns serializable domain types,
+The workspace has five Rust crates. `common` owns serializable domain types,
 including UUID-backed IDs, architectures, UTC timestamps, manifests, state
 transitions, structured validation/build errors, logs and artifacts. Extensible
 Flatpak options remain JSON values at the manifest boundary; job state and service
@@ -61,3 +61,24 @@ marks validating/building jobs failed with `worker_restarted`, deletes private
 scratch workspaces, and resumes queued jobs. Cleanup failures stop startup to avoid
 starting work alongside an unverified abandoned container. Build failures and
 executor panics are isolated; a storage/supervisor failure shuts down the service.
+
+## M2 publishing boundary
+
+`services/publisher` owns the async `Publisher` and `PublishJournal` abstractions,
+artifact integrity/import checks, the flat-manager HTTP client and public signed
+repository verification. Axum handlers never issue raw manager requests. Shared
+publication IDs/channels/ref/state/result/signing types live in `common`. The API's
+second supervisor uses the same SQLite connection/data ownership lock and a separate
+bounded durable publication queue. It journals progress before remote side effects
+and resumes interrupted stages against the backend's observed state.
+
+Stable/beta select independent repositories; manifest branch selects the Flatpak
+ref. Same application/channel/architecture releases are serialized, including
+uncertain older releases. Concurrency is configurable for independent work. Builds
+remain isolated containers, without publisher credentials or signing keys.
+flat-manager owns PostgreSQL, staged uploads, commit rewriting, signing and summary
+updates. nginx serves its generated repository as static HTTP content. The API and
+publisher hold a scoped token/public key; only flat-manager holds private keys.
+
+See [publishing.md](publishing.md) for state/idempotency/recovery and
+[repository.md](repository.md) for signing, storage and future CDN deployment.

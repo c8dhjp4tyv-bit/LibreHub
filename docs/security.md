@@ -1,4 +1,4 @@
-# M1 security and deployment boundaries
+# LibreHub security and deployment boundaries
 
 M1 is intended for a trusted development operator on a dedicated Linux build host.
 Manifest build commands execute arbitrary code. Validation improves developer
@@ -86,5 +86,50 @@ recovery removes deterministic UUID container names before marking jobs failed.
 Service-owned temporary workspaces are then removed. Preserve backups of metadata
 and artifacts together; M1 does not provide a backup or automatic retention service.
 
-M2 adds flat-manager, OSTree publication, signing, `.flatpakrepo`, and public
-installation. M1 stores unsigned private bundles and possesses no signing keys.
+## M2 trust and signing boundary
+
+Untrusted inputs include submitted manifests, source code, build artifacts and
+application metadata. Trusted components include LibreHub API/publisher,
+flat-manager, its signing/key storage, and operator-owned repository/storage
+configuration. The API revalidates successful build state and immutable metadata;
+the publisher independently checks controlled path boundaries, regular-file type,
+size, SHA-256, imported Flatpak app/architecture/branch/runtime and OSTree fsck.
+Only an immutable private verified copy is used for publication. Flatpak/OSTree
+parsers process untrusted bytes inside the trusted publishing boundary; keep that
+tooling patched and use a dedicated operator host. This is not a hostile
+multi-tenant artifact sandbox.
+
+Private signing keys exist only in flat-manager's trusted runtime volume, never
+in Git, worker images, worker environments, public API responses or logs. The
+publisher receives a scoped `build/upload/publish` token and public key only.
+The scoped credential never reaches application build containers. nginx mounts
+only the public repository volume read-only; signing/config/token-secret storage
+is a separate volume. CI generates one-day development keys at runtime, exports
+only the public key, and deletes disposable volumes after testing.
+
+Public `.flatpakrepo` files embed the exported key. Successful publication requires
+an actual public OSTree pull with summary and commit GPG verification enabled and
+a checksum matching flat-manager's publish result. CI additionally installs and
+runs Hello using a normal isolated Flatpak client, verifies signature trust and
+checks the installed origin/ref/checksum. No primary or fallback test disables
+GPG verification.
+
+Publication API accepts only a source build UUID and validated channel. It never
+accepts an arbitrary path, app ID, repository name, key or URL. Errors store stable
+codes and fixed messages, excluding upstream response bodies, tokens and internal
+paths. HTTP redirects are disabled for manager requests; connect/request deadlines,
+bounded retries and response limits prevent credential forwarding and indefinite
+resource use. Ref components and object inventories are validated before filesystem
+or protocol use. Admission has two concurrent integrity checks; at most 64
+nonterminal publications and 1–8 active workers are permitted. Same ref releases
+are serialized. Retryable/uncertain side effects are reconciled against persistent
+remote state, never assumed rolled back.
+
+Publishing is an unauthenticated operator capability in M2. Keep all host ports
+on localhost or enforce authentication/authorization at a trusted gateway. A
+host account able to access the Docker daemon or modify the SQLite/data/config
+files is already inside the trusted boundary; path checks do not defend against
+an actively malicious administrator swapping directories concurrently. Production
+signing provisioning, backup, rotation and scoped token policy must replace the
+explicitly development-only Compose bootstrap. See
+[repository.md](repository.md) and [publishing.md](publishing.md) for details.
