@@ -65,7 +65,7 @@ jobs:
           export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
           docker compose config --quiet
           docker compose up -d --no-build
-          timeout 120 docker compose wait repository-bootstrap
+          sh scripts/wait-repository-bootstrap.sh
       - run: cargo build --workspace --locked
       - name: Real signed publish and Flatpak installation proof
         run: |
