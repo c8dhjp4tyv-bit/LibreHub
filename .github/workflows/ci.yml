@@ -1,4 +1,4 @@
-name: M1 and M2 checks
+name: M1, M2 and M3 checks
 on:
   push:
   pull_request:
@@ -23,7 +23,7 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
       - run: docker compose config --quiet
-      - run: python3 -m py_compile scripts/test-publish-install.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
+      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
   worker-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -76,6 +76,15 @@ jobs:
         with:
           name: signed-flatpak-installation-proof
           path: data/e2e-proof.json
+      - name: Real Git developer, signed webhook, recovery, publish and install proof
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-developer-platform.py
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: developer-platform-git-workflow-proof
+          path: data/m3-proof.json
       - name: Service diagnostics
         if: failure()
         run: docker compose logs --tail 150 flat-manager repository-http postgres repository-bootstrap

@@ -19,7 +19,7 @@ PUBLIC = os.environ.get('LIBREHUB_PUBLIC_BASE_URL', 'http://localhost:8090').rst
 def request(path, data=None):
     faults.reconcile_process()
     raw = None if data is None else json.dumps(data).encode()
-    with urllib.request.urlopen(urllib.request.Request(API + path, data=raw, headers={'Content-Type': 'application/json'}), timeout=90) as response:
+    with urllib.request.urlopen(urllib.request.Request(API + path, data=raw, headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_token}), timeout=90) as response:
         return json.load(response)
 
 def wait(path, terminal=True):
@@ -52,6 +52,9 @@ with tempfile.TemporaryDirectory(prefix='librehub-e2e-') as temp:
     work = Path(temp)
     env = os.environ.copy()
     env['LIBREHUB_DATA_DIR'] = str(work / 'data')
+    admin = ROOT / 'target/debug/librehub-admin'
+    developer = json.loads(subprocess.check_output([str(admin), 'create-developer', 'M2 acceptance operator'], env=env, text=True))
+    api_token = json.loads(subprocess.check_output([str(admin), 'create-token', developer['id'], 'M2 acceptance'], env=env, text=True))['token']
     log = open(work / 'api.log', 'w+')
     faults = PublishingFaults(env['LIBREHUB_FLAT_MANAGER_URL'], str(ROOT / 'target/debug/librehub-api'), env, log)
     try:
