@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use librehub_common::*;
+use librehub_publisher::PublishError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{str::FromStr, sync::Arc};
@@ -194,7 +195,14 @@ async fn publish_build(
             .publisher
             .eligible(build, manifest, state.supervisor.store.data_dir.clone())
             .await
-            .map_err(|e| ApiError::new(StatusCode::CONFLICT, e.code(), e.to_string()))?;
+            .map_err(|e| {
+                let status = if e.retryable() || matches!(e, PublishError::Storage) {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::CONFLICT
+                };
+                ApiError::new(status, e.code(), e.to_string())
+            })?;
         state
             .supervisor
             .store

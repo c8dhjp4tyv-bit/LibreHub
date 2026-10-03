@@ -14,7 +14,7 @@ OSTree and GnuPG, from the repository root:
 ```bash
 export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
 docker compose up -d --build
-docker compose logs repository-bootstrap
+docker compose wait repository-bootstrap
 # After bootstrap exits successfully:
 . data/dev/publisher.env
 cargo run -p librehub-api

@@ -26,6 +26,7 @@ use tower::ServiceExt;
 struct Fake {
     calls: AtomicUsize,
     failure: bool,
+    admission_error: Option<PublishError>,
 }
 #[async_trait]
 impl Publisher for Fake {
@@ -37,6 +38,9 @@ impl Publisher for Fake {
     ) -> Result<(), PublishError> {
         if build.status != BuildStatus::Succeeded {
             return Err(PublishError::Ineligible);
+        }
+        if let Some(error) = &self.admission_error {
+            return Err(error.clone());
         }
         Ok(())
     }
@@ -152,6 +156,7 @@ async fn api_publish_lookup_cancel_and_readiness() {
         Arc::new(Fake {
             calls: AtomicUsize::new(0),
             failure: false,
+            admission_error: None,
         }),
         repository(),
         1,
@@ -288,6 +293,7 @@ async fn recovery_success_failure_and_terminal_lookup() {
         let publisher = Arc::new(Fake {
             calls: AtomicUsize::new(0),
             failure,
+            admission_error: None,
         });
         let service = Publishing::new(
             store.clone(),
@@ -421,6 +427,57 @@ async fn real_publisher_admission_rejects_modified_artifact_without_leaking_path
     assert!(!body.to_string().contains("private-token"));
     assert!(!body.to_string().contains(dir.path().to_str().unwrap()));
     assert!(store.publications(build).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn admission_distinguishes_unavailable_infrastructure_from_build_conflicts() {
+    for (error, expected) in [
+        (PublishError::Timeout, StatusCode::SERVICE_UNAVAILABLE),
+        (PublishError::Storage, StatusCode::SERVICE_UNAVAILABLE),
+        (PublishError::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+        (PublishError::PartialUpload, StatusCode::SERVICE_UNAVAILABLE),
+        (PublishError::Verification, StatusCode::SERVICE_UNAVAILABLE),
+        (PublishError::Integrity, StatusCode::CONFLICT),
+        (PublishError::Metadata, StatusCode::CONFLICT),
+        (PublishError::Architecture, StatusCode::CONFLICT),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let build = succeeded(&store).await;
+        let supervisor = Supervisor::new(store.clone());
+        let publisher = Arc::new(Fake {
+            calls: AtomicUsize::new(0),
+            failure: false,
+            admission_error: Some(error.clone()),
+        });
+        let service = Publishing::new(
+            store.clone(),
+            publisher.clone(),
+            repository(),
+            1,
+            supervisor.shutdown.clone(),
+        )
+        .unwrap();
+        let app = router_with_publisher(
+            ApiState {
+                supervisor,
+                architecture: Architecture::native(),
+            },
+            Some(service),
+        );
+        let (status, body) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/builds/{build}/publish"),
+            json!({"channel":"stable"}),
+        )
+        .await;
+        assert_eq!(status, expected, "{error:?}");
+        assert_eq!(body["code"], error.code());
+        assert_eq!(body["message"], error.to_string());
+        assert!(store.publications(build).await.unwrap().is_empty());
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test]

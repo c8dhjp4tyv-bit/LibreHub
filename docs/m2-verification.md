@@ -1,20 +1,20 @@
 # M2 acceptance and review evidence
 
 The automated normal-client installation succeeded in
-[CI run 37149615887](https://github.com/c8dhjp4tyv-bit/LibreHub/actions/runs/37149615887)
-on implementation commit `1eee4701680675a033c1cc400dea3bfefed43b1e`.
+[CI run 37150088918](https://github.com/c8dhjp4tyv-bit/LibreHub/actions/runs/37150088918)
+on reviewed PR commit `3f4da1e7bff7ff6f41c797e6a50c51d255299f72`.
 Its `signed-flatpak-installation-proof` artifact records:
 
 | Evidence | Value |
 | --- | --- |
-| Build UUID | `2bbae05f-0ef4-47e4-9c65-a87e9efd1e3f` |
-| Publication UUID | `078f9da7-224b-4db2-9d4a-2b493a409271` |
+| Build UUID | `35dc0964-b49d-48e8-8a7b-5387ac506cc5` |
+| Publication UUID | `7c130e8b-53d4-4de8-85c1-22d55a5a18a7` |
 | flat-manager build | `1` (exactly one correlated creation) |
 | Installed ref | `app/org.librehub.Hello/x86_64/master` |
-| Installed/published commit | `84f0fd99a8638367fb32222acba802e6d5ae8b21f78837d7d3097b9602b8984d` |
-| Ephemeral DEVELOPMENT signing fingerprint | `13DF07D2822D9617DA941F3D5BDF226831741188` |
-| Signed summary SHA-256 before | `70482e2c19426c9b4b5fbf200ba662f31665eed35ab6d48ed8d23f946d30fcd6` |
-| Signed summary SHA-256 after | `950d0edec7a7256afb9cfe2ed0171bd7a1a6fba807a39a298afc7984408fce03` |
+| Installed/published commit | `e8745f4d99cda99c4b0bd150db027ffebcadf84a241f84745092f77669b6ac83` |
+| Ephemeral DEVELOPMENT signing fingerprint | `EA6FA8270DD0E54EB3AFB106535A08307908510C` |
+| Signed summary SHA-256 before | `cdd4d9c87726e15f6cd2e91efc4d4e15d3eaab58036e8451cae9a4189944288b` |
+| Signed summary SHA-256 after | `cf74c6a5e81f2894c38409585027312d3a1e67f8fc994e968654c87a79454e93` |
 
 The test submitted the Hello manifest through the real M1 API/executor, published
 through the M2 API and real pinned flat-manager/PostgreSQL, then installed from
@@ -70,6 +70,6 @@ Developer authentication/ownership verification, moderation, web store/catalog,
 multi-tenant hardening, automatic source discovery, additional package formats,
 multi-architecture fleets and update webhooks remain deferred to M3+.
 
-No M2 acceptance item is left unproven by the automated installation scenario
-and supporting checks. The subsequent documentation-only acceptance record and
-trailing-manifest-whitespace cleanup do not alter the implementation tested above.
+This acceptance record is tied to the exact commit and artifact cited above.
+Subsequent changes must pass their own CI checks and real installation scenario;
+the PR description links the latest successful run.

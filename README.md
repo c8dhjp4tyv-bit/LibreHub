@@ -21,7 +21,8 @@ cargo test --workspace --locked
 # Allow several GiB of disk space and time for the first build.
 export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
 docker compose up -d --build
-# Wait for repository-bootstrap to finish, then load public trust and scoped token:
+docker compose wait repository-bootstrap
+# After successful bootstrap completion, load public trust and scoped token:
 . data/dev/publisher.env
 cargo run -p librehub-api
 ```

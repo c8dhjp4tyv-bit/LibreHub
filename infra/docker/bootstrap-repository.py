@@ -7,11 +7,15 @@ from pathlib import Path
 import secrets
 import shlex
 import subprocess
+import tempfile
 
 os.umask(0o077)
 state = Path('/state')
 public = Path('/repositories')
 host = Path('/host-output/dev')
+host_path = os.environ.get('LIBREHUB_HOST_OUTPUT', '')
+if not Path(host_path).is_absolute() or any(c in host_path for c in "'\n\r"):
+    raise SystemExit('LIBREHUB_HOST_OUTPUT must be a safe absolute host directory')
 for directory in [state, public, host, state / 'gnupg', state / 'builds']:
     directory.mkdir(parents=True, exist_ok=True)
 base = os.environ.get('LIBREHUB_PUBLIC_BASE_URL', 'http://localhost:8090').rstrip('/')
@@ -82,17 +86,22 @@ for root, dirs, files in os.walk(public):
     Path(root).chmod(0o755)
     for name in files:
         (Path(root) / name).chmod(0o644)
-(host / 'publisher.env').write_text(f'''export LIBREHUB_FLAT_MANAGER_URL=http://127.0.0.1:8081
-export LIBREHUB_FLAT_MANAGER_TOKEN_FILE='{host.resolve() / "publisher.token"}'
-export LIBREHUB_SIGNING_PUBLIC_KEY_FILE='{host.resolve() / "repository.gpg"}'
+# Publish complete host paths only after all bootstrap output is ready.
+env_content = f'''export LIBREHUB_FLAT_MANAGER_URL=http://127.0.0.1:8081
+export LIBREHUB_FLAT_MANAGER_TOKEN_FILE='{host_path}/publisher.token'
+export LIBREHUB_SIGNING_PUBLIC_KEY_FILE='{host_path}/repository.gpg'
 export LIBREHUB_SIGNING_FINGERPRINT={fingerprint}
 export LIBREHUB_PUBLIC_BASE_URL={shlex.quote(base)}
-''')
-# Replace container paths by the caller's absolute host directory without shell interpolation.
-host_path = os.environ.get('LIBREHUB_HOST_OUTPUT', '')
-if not host_path or any(c in host_path for c in "'\n\r"):
-    raise SystemExit('LIBREHUB_HOST_OUTPUT must be a safe absolute host directory')
+'''
 env_file = host / 'publisher.env'
-env_file.write_text(env_file.read_text().replace('/host-output/dev', host_path))
-os.chown(env_file, owner, group)
+with tempfile.NamedTemporaryFile(mode='w', dir=host, prefix='.publisher.env.', delete=False) as output:
+    temporary_env = Path(output.name)
+    try:
+        output.write(env_content)
+        output.flush()
+        os.fchown(output.fileno(), owner, group)
+        os.fsync(output.fileno())
+        os.replace(temporary_env, env_file)
+    finally:
+        temporary_env.unlink(missing_ok=True)
 print('Development repositories initialized; signing key stays in the trusted manager volume.')
