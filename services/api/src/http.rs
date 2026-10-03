@@ -1,6 +1,6 @@
-use crate::{store, worker::Supervisor};
+use crate::{publication_store::AdmissionError, publishing::Publishing, store, worker::Supervisor};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use librehub_common::*;
+use librehub_publisher::PublishError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{str::FromStr, sync::Arc};
@@ -57,8 +58,19 @@ impl IntoResponse for ApiError {
 }
 
 pub fn router(state: ApiState) -> Router {
+    router_with_publisher(state, None)
+}
+pub fn router_with_publisher(state: ApiState, publishing: Option<Publishing>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/librehub.flatpakrepo", get(stable_repo))
+        .route("/librehub-beta.flatpakrepo", get(beta_repo))
+        .route("/repository.gpg", get(public_key))
+        .route("/api/v1/builds/{id}/publish", post(publish_build))
+        .route("/api/v1/builds/{id}/publishes", get(build_publications))
+        .route("/api/v1/publishes/{id}", get(publication))
+        .route("/api/v1/publishes/{id}/cancel", post(cancel_publication))
         .route("/api/v1/builds", post(create))
         .route("/api/v1/builds/{id}", get(lookup))
         .route("/api/v1/builds/{id}/logs", get(logs))
@@ -81,7 +93,267 @@ pub fn router(state: ApiState) -> Router {
             2 * librehub_validator::MAX_MANIFEST_BYTES,
         ))
         .layer(TraceLayer::new_for_http())
+        .layer(Extension(publishing))
         .with_state(Arc::new(state))
+}
+
+fn publishing_service(publishing: Option<Publishing>) -> Result<Publishing, ApiError> {
+    publishing.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "publishing_disabled",
+            "Repository publishing is not configured",
+        )
+    })
+}
+fn publish_id(raw: &str) -> Result<PublishId, ApiError> {
+    raw.parse().map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_publish_id",
+            "Publish ID must be a UUID",
+        )
+    })
+}
+fn publication_error(error: anyhow::Error) -> ApiError {
+    if let Some(error) = error.downcast_ref::<AdmissionError>() {
+        let (status, code) = match error {
+            AdmissionError::Missing => (StatusCode::NOT_FOUND, "build_not_found"),
+            AdmissionError::Ineligible => (StatusCode::CONFLICT, "build_not_publishable"),
+            AdmissionError::Full => (StatusCode::SERVICE_UNAVAILABLE, "publish_queue_full"),
+            AdmissionError::TooLate => (StatusCode::CONFLICT, "publication_not_cancellable"),
+        };
+        return ApiError::new(status, code, error.to_string());
+    }
+    ApiError::internal(error)
+}
+async fn publish_build(
+    State(state): State<Arc<ApiState>>,
+    Extension(publishing): Extension<Option<Publishing>>,
+    Path(raw): Path<String>,
+    body: Result<Json<PublishRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Response, ApiError> {
+    let publishing = publishing_service(publishing)?;
+    if state.supervisor.shutdown.is_cancelled() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service_stopping",
+            "Service is shutting down",
+        ));
+    }
+    let Json(request) = body.map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_publish_request",
+            "Provide only channel: stable or beta",
+        )
+    })?;
+    let id = parse_id(&raw)?;
+    let build = state
+        .supervisor
+        .store
+        .get(id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(ApiError::missing)?;
+    let existing = state
+        .supervisor
+        .store
+        .publications(id)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .find(|p| p.channel == request.channel);
+    let record = if let Some(existing) = existing {
+        existing
+    } else {
+        if build.status != BuildStatus::Succeeded {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "build_not_publishable",
+                "Only successful builds can be published",
+            ));
+        }
+        let _permit = publishing
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "publish_admission_busy",
+                    "Publication admission is busy; retry later",
+                )
+            })?;
+        let manifest = state
+            .supervisor
+            .store
+            .manifest(id)
+            .await
+            .map_err(ApiError::internal)?;
+        publishing
+            .publisher
+            .eligible(build, manifest, state.supervisor.store.data_dir.clone())
+            .await
+            .map_err(|e| {
+                let status = if e.retryable() || matches!(e, PublishError::Storage) {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::CONFLICT
+                };
+                ApiError::new(status, e.code(), e.to_string())
+            })?;
+        state
+            .supervisor
+            .store
+            .enqueue_publish(id, request.channel)
+            .await
+            .map_err(publication_error)?
+    };
+    publishing.wake.notify_one();
+    let status = if record.status.is_terminal() {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((
+        status,
+        [(header::LOCATION, format!("/api/v1/publishes/{}", record.id))],
+        Json(record),
+    )
+        .into_response())
+}
+async fn publication(
+    State(state): State<Arc<ApiState>>,
+    Path(raw): Path<String>,
+) -> Result<Json<PublishRecord>, ApiError> {
+    Ok(Json(
+        state
+            .supervisor
+            .store
+            .publish_record(publish_id(&raw)?)
+            .await
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "publish_not_found",
+                    "Publication does not exist",
+                )
+            })?,
+    ))
+}
+async fn build_publications(
+    State(state): State<Arc<ApiState>>,
+    Path(raw): Path<String>,
+) -> Result<Json<Vec<PublishRecord>>, ApiError> {
+    let id = parse_id(&raw)?;
+    if state
+        .supervisor
+        .store
+        .get(id)
+        .await
+        .map_err(ApiError::internal)?
+        .is_none()
+    {
+        return Err(ApiError::missing());
+    }
+    Ok(Json(
+        state
+            .supervisor
+            .store
+            .publications(id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+async fn cancel_publication(
+    State(state): State<Arc<ApiState>>,
+    Path(raw): Path<String>,
+) -> Result<Json<PublishRecord>, ApiError> {
+    Ok(Json(
+        state
+            .supervisor
+            .store
+            .cancel_publication(publish_id(&raw)?)
+            .await
+            .map_err(publication_error)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "publish_not_found",
+                    "Publication does not exist",
+                )
+            })?,
+    ))
+}
+async fn ready(
+    State(state): State<Arc<ApiState>>,
+    Extension(publishing): Extension<Option<Publishing>>,
+) -> impl IntoResponse {
+    let database = state.supervisor.store.database_ready().await;
+    let (manager, repository, publisher) = if let Some(publishing) = publishing {
+        let (manager, storage, repository) = tokio::join!(
+            publishing.publisher.ready(),
+            publishing.storage_ready(),
+            publishing.publisher.repository_ready()
+        );
+        (
+            manager,
+            storage && repository,
+            publishing
+                .running
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    } else {
+        (false, false, false)
+    };
+    let ready =
+        database && manager && repository && publisher && !state.supervisor.shutdown.is_cancelled();
+    let component = |ok| if ok { "ok" } else { "unavailable" };
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(
+            serde_json::json!({"ready":ready,"components":{"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
+        ),
+    )
+}
+async fn stable_repo(
+    Extension(publishing): Extension<Option<Publishing>>,
+) -> Result<Response, ApiError> {
+    repo_file(publishing, RepositoryChannel::Stable)
+}
+async fn beta_repo(
+    Extension(publishing): Extension<Option<Publishing>>,
+) -> Result<Response, ApiError> {
+    repo_file(publishing, RepositoryChannel::Beta)
+}
+fn repo_file(
+    publishing: Option<Publishing>,
+    channel: RepositoryChannel,
+) -> Result<Response, ApiError> {
+    let service = publishing_service(publishing)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/vnd.flatpak.repo"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        service.repository.flatpakrepo(channel),
+    )
+        .into_response())
+}
+async fn public_key(
+    Extension(publishing): Extension<Option<Publishing>>,
+) -> Result<Response, ApiError> {
+    Ok((
+        [(header::CONTENT_TYPE, "application/pgp-keys")],
+        publishing_service(publishing)?.repository.public_key,
+    )
+        .into_response())
 }
 async fn health(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     if state.supervisor.shutdown.is_cancelled() {

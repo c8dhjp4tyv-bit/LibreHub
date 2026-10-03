@@ -6,6 +6,7 @@ edition.workspace = true
 librehub-common.workspace = true
 librehub-validator.workspace = true
 librehub-builder.workspace = true
+librehub-publisher.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -20,6 +21,7 @@ tokio-util.workspace = true
 tower-http = { version = "0.6", features = ["trace"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tempfile = "3"
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3"

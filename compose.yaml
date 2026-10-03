@@ -1,5 +1,55 @@
 # Provision the worker image. The API runs on the host so no container gets the Docker socket.
 services:
+  postgres:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_USER: librehub
+      POSTGRES_PASSWORD: development-only
+      POSTGRES_DB: librehub
+    volumes: [manager-database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U librehub]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  repository-bootstrap:
+    image: librehub-flat-manager:m2
+    build:
+      context: .
+      dockerfile: infra/docker/flat-manager.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LIBREHUB_PUBLIC_BASE_URL: ${LIBREHUB_PUBLIC_BASE_URL:-http://localhost:8090}
+      LIBREHUB_HOST_OUTPUT: ${PWD}/data/dev
+      LIBREHUB_DEV_UID: ${LIBREHUB_DEV_UID:-1000}
+      LIBREHUB_DEV_GID: ${LIBREHUB_DEV_GID:-1000}
+    volumes:
+      - manager-state:/state
+      - repository-data:/repositories
+      - ./data:/host-output
+    command: [python3, /usr/local/lib/librehub/bootstrap-repository.py]
+  flat-manager:
+    image: librehub-flat-manager:m2
+    depends_on:
+      repository-bootstrap:
+        condition: service_completed_successfully
+    ports: ['127.0.0.1:8081:8080']
+    environment:
+      ACTIX_WORKERS: '2'
+    volumes:
+      - manager-state:/state
+      - repository-data:/repositories
+    stop_grace_period: 30s
+  repository-http:
+    image: nginx:1.28.0-alpine
+    depends_on:
+      repository-bootstrap:
+        condition: service_completed_successfully
+    ports: ['127.0.0.1:8090:80']
+    volumes:
+      - repository-data:/usr/share/nginx/html:ro
   worker-image:
     image: librehub-worker:m1
     build:
@@ -11,3 +61,7 @@ services:
     security_opt: [no-new-privileges:true]
     entrypoint: [/bin/sh, -c]
     command: ['flatpak-builder --version && flatpak --version']
+volumes:
+  manager-database:
+  manager-state:
+  repository-data:
