@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patch unzip xz-utils bzip2 gzip tar make gcc g++ pkg-config python3 \
     elfutils binutils rsync && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home builder \
-    && mkdir -p /work /work/run && chown -R builder:builder /work
+    && mkdir -p /work /work/run && chown -R builder:builder /work \
+    && chmod 700 /work/run
 USER 10001:10001
 # Seed runtimes in the immutable image. Build containers never get a host runtime mount.
 RUN case "$TARGETARCH" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; *) exit 1 ;; esac \
