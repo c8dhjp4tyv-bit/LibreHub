@@ -28,6 +28,9 @@ pub struct QueueFull;
 
 impl Store {
     pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
+        Self::open_at(data_dir, None)
+    }
+    pub fn open_at(data_dir: &Path, database_path: Option<&Path>) -> anyhow::Result<Self> {
         std::fs::create_dir_all(data_dir).context("Cannot create data directory")?;
         let data_dir = std::fs::canonicalize(data_dir)?;
         let lock = std::fs::OpenOptions::new()
@@ -38,7 +41,11 @@ impl Store {
             .open(data_dir.join("supervisor.lock"))?;
         lock.try_lock_exclusive()
             .context("Another LibreHub supervisor owns this data directory")?;
-        let db = Connection::open(data_dir.join("builds.sqlite3"))?;
+        let db = Connection::open(
+            database_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| data_dir.join("builds.sqlite3")),
+        )?;
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -68,13 +75,14 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        db.execute_batch(include_str!("../migrations/002_publications.sql"))?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             _lock: Arc::new(lock),
             data_dir,
         })
     }
-    async fn run<T, F>(&self, f: F) -> anyhow::Result<T>
+    pub(crate) async fn run<T, F>(&self, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> anyhow::Result<T> + Send + 'static,

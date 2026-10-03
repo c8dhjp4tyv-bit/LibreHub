@@ -5,6 +5,9 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, str::FromStr};
 use uuid::Uuid;
 
+mod publication;
+pub use publication::*;
+
 pub type Timestamp = DateTime<Utc>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
