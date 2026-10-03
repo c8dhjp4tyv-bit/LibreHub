@@ -27,7 +27,7 @@ expected by flat-manager. Rather than extracting an arbitrary worker directory
 tree, the publisher copies and hashes the bounded M1 bundle into a private
 workspace, runs `flatpak build-import-bundle` into an archive-z2 repository, and
 checks OSTree fsck, the exact app/architecture/manifest-branch ref and application
-name/runtime metadata. This retains M1's existing artifact and archive guarantees
+name/runtime/SDK metadata. This retains M1's existing artifact and archive guarantees
 and supports existing successful M1 builds. The publisher repeats validation
 before upload, so tampering after HTTP admission stops publication.
 

@@ -109,3 +109,97 @@ fn public_trust_descriptor_has_no_secret_and_rejects_ini_injection() {
     config.public_base_url.push_str("\nGPGKey=attacker");
     assert!(config.validate().is_err());
 }
+
+#[tokio::test]
+async fn signing_configuration_rejects_private_keys_and_wrong_fingerprints() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let gpg_args = vec![
+        "--homedir".into(),
+        dir.path().display().to_string(),
+        "--batch".into(),
+        "--pinentry-mode".into(),
+        "loopback".into(),
+        "--passphrase".into(),
+        "".into(),
+    ];
+    let mut generate = gpg_args.clone();
+    generate.extend(
+        [
+            "--quick-generate-key",
+            "LibreHub TEST ONLY <test@librehub.invalid>",
+            "rsa2048",
+            "sign",
+            "1d",
+        ]
+        .map(str::to_owned),
+    );
+    librehub_publisher::artifact::command("gpg", &generate, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let mut list = gpg_args.clone();
+    list.extend(["--with-colons", "--list-keys"].map(str::to_owned));
+    let listing = librehub_publisher::artifact::command("gpg", &list, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let fingerprint = listing
+        .lines()
+        .find(|l| l.starts_with("fpr:"))
+        .unwrap()
+        .split(':')
+        .nth(9)
+        .unwrap()
+        .to_owned();
+    let export = |option: &'static str| {
+        let args = gpg_args.clone();
+        async move {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                tokio::process::Command::new("gpg")
+                    .args(args)
+                    .arg(option)
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .stdout
+        }
+    };
+    let mut config = RepositoryConfig {
+        public_base_url: "http://localhost:8090".into(),
+        public_key: export("--export").await,
+        fingerprint,
+        runtime_repo_url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+    };
+    config.verify_key().await.unwrap();
+    config.fingerprint = "0".repeat(40);
+    assert!(config.verify_key().await.is_err());
+    config.public_key = export("--export-secret-keys").await;
+    assert!(config.verify_key().await.is_err());
+}
+
+#[test]
+fn application_metadata_cannot_hide_mismatches_in_other_sections() {
+    use librehub_publisher::artifact::verify_application_metadata;
+    let manifest = librehub_validator::validate(
+        include_str!("../../../examples/org.librehub.Hello.json"),
+        ManifestFormat::Json,
+    )
+    .unwrap();
+    let arch = Architecture::native();
+    let valid = format!(
+        "[Application]\nname={}\nruntime={}/{arch}/25.08\nsdk={}/{arch}/25.08\n",
+        manifest.app_id, manifest.runtime, manifest.sdk
+    );
+    verify_application_metadata(&valid, &manifest, arch).unwrap();
+    for invalid in [
+        valid.replace("name=org.librehub.Hello", "name=org.attacker.Other")
+            + "[Other]\nname=org.librehub.Hello\n",
+        valid.clone() + "name=org.attacker.Other\n",
+        valid.clone() + "[Application]\nname=org.librehub.Hello\n",
+        valid.replace("sdk=org.freedesktop.Sdk", "sdk=org.attacker.Sdk"),
+    ] {
+        assert!(verify_application_metadata(&invalid, &manifest, arch).is_err());
+    }
+}

@@ -76,6 +76,8 @@ impl Store {
                 || old.architecture != next.architecture
                 || (old.flat_manager_build_id.is_some()
                     && old.flat_manager_build_id != next.flat_manager_build_id)
+                || (old.source_commit.is_some() && old.source_commit != next.source_commit)
+                || (old.create_requested && !next.create_requested)
             {
                 bail!("Publication identity cannot change");
             }

@@ -12,6 +12,52 @@ pub struct RepositoryConfig {
     pub runtime_repo_url: String,
 }
 impl RepositoryConfig {
+    /// Reject secret material and fingerprint mismatches before serving key bytes.
+    pub async fn verify_key(&self) -> Result<(), PublishError> {
+        self.validate()?;
+        let dir = tempfile::tempdir().map_err(|_| PublishError::Storage)?;
+        let path = dir.path().join("key.gpg");
+        tokio::fs::write(&path, &self.public_key)
+            .await
+            .map_err(|_| PublishError::Storage)?;
+        let listing = command(
+            "gpg",
+            &[
+                "--homedir".into(),
+                dir.path().display().to_string(),
+                "--batch".into(),
+                "--with-colons".into(),
+                "--import-options".into(),
+                "show-only".into(),
+                "--dry-run".into(),
+                "--import".into(),
+                path.display().to_string(),
+            ],
+            Duration::from_secs(10),
+        )
+        .await
+        .map_err(|_| PublishError::Malformed)?;
+        if listing
+            .lines()
+            .any(|line| line.starts_with("sec:") || line.starts_with("ssb:"))
+            || listing
+                .lines()
+                .filter(|line| line.starts_with("pub:"))
+                .count()
+                != 1
+        {
+            return Err(PublishError::Malformed);
+        }
+        let fingerprint = listing
+            .lines()
+            .find(|line| line.starts_with("fpr:"))
+            .and_then(|line| line.split(':').nth(9))
+            .ok_or(PublishError::Malformed)?;
+        if !fingerprint.eq_ignore_ascii_case(&self.fingerprint) {
+            return Err(PublishError::Malformed);
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), PublishError> {
         for value in [&self.public_base_url, &self.runtime_repo_url] {
             let url = reqwest::Url::parse(value).map_err(|_| PublishError::Malformed)?;
@@ -26,7 +72,11 @@ impl RepositoryConfig {
                 return Err(PublishError::Malformed);
             }
         }
-        if self.public_key.is_empty()
+        if self
+            .public_key
+            .windows(21)
+            .any(|w| w == b"PGP PRIVATE KEY BLOCK")
+            || self.public_key.is_empty()
             || self.public_key.len() > 65536
             || ![40, 64].contains(&self.fingerprint.len())
             || !self.fingerprint.bytes().all(|b| b.is_ascii_hexdigit())

@@ -367,3 +367,92 @@ async fn m1_database_migration_preserves_builds() {
         PublishStatus::Queued
     );
 }
+
+#[tokio::test]
+async fn real_publisher_admission_rejects_modified_artifact_without_leaking_paths() {
+    use librehub_publisher::{FlatManagerPublisher, flat_manager::FlatManagerClient};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let build = succeeded(&store).await;
+    let path = store
+        .data_dir
+        .join(format!("builds/{build}/artifacts/application.flatpak"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"hello").unwrap(); // Recorded checksum deliberately differs.
+    let client = FlatManagerClient::new(
+        "http://127.0.0.1:1",
+        "private-token".into(),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let publisher = FlatManagerPublisher::new(
+        client,
+        repository(),
+        Architecture::native(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let supervisor = Supervisor::new(store.clone());
+    let service = Publishing::new(
+        store.clone(),
+        Arc::new(publisher),
+        repository(),
+        1,
+        supervisor.shutdown.clone(),
+    )
+    .unwrap();
+    let app = router_with_publisher(
+        ApiState {
+            supervisor,
+            architecture: Architecture::native(),
+        },
+        Some(service),
+    );
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/builds/{build}/publish"),
+        json!({"channel":"stable"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "artifact_integrity_failed");
+    assert!(!body.to_string().contains("private-token"));
+    assert!(!body.to_string().contains(dir.path().to_str().unwrap()));
+    assert!(store.publications(build).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn publication_queue_is_bounded_and_cannot_accept_failed_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    for _ in 0..64 {
+        let id = succeeded(&store).await;
+        store
+            .enqueue_publish(id, RepositoryChannel::Stable)
+            .await
+            .unwrap();
+    }
+    let extra = succeeded(&store).await;
+    assert!(
+        store
+            .enqueue_publish(extra, RepositoryChannel::Beta)
+            .await
+            .is_err()
+    );
+    for state in [BuildStatus::Failed, BuildStatus::Cancelled] {
+        let id = store
+            .insert(manifest(), Architecture::native())
+            .await
+            .unwrap()
+            .id;
+        store.transition(id, state, None, None).await.unwrap();
+        assert!(
+            store
+                .enqueue_publish(id, RepositoryChannel::Stable)
+                .await
+                .is_err()
+        );
+    }
+}

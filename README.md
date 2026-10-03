@@ -45,7 +45,6 @@ curl -X POST http://localhost:8080/api/v1/builds \
 # Returns HTTP 202: {"id":"<BUILD_ID>","status":"queued"}
 curl http://localhost:8080/api/v1/builds/<BUILD_ID>
 curl 'http://localhost:8080/api/v1/builds/<BUILD_ID>/logs?after=0&limit=200'
-curl -X POST http://localhost:8080/api/v1/builds/<BUILD_ID>/cancel
 ```
 
 YAML also works with `Content-Type: application/yaml` and

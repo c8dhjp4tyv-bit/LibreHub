@@ -107,7 +107,8 @@ only the public repository volume read-only; signing/config/token-secret storage
 is a separate volume. CI generates one-day development keys at runtime, exports
 only the public key, and deletes disposable volumes after testing.
 
-Public `.flatpakrepo` files embed the exported key. Successful publication requires
+Startup verifies the public key's fingerprint and rejects secret-key packets before
+serving any trust endpoint. Public `.flatpakrepo` files embed the exported key. Successful publication requires
 an actual public OSTree pull with summary and commit GPG verification enabled and
 a checksum matching flat-manager's publish result. CI additionally installs and
 runs Hello using a normal isolated Flatpak client, verifies signature trust and

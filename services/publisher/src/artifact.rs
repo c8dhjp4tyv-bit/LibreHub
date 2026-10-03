@@ -246,7 +246,7 @@ pub async fn prepare(
     let metadata = command(
         "ostree",
         &[
-            repo,
+            repo.clone(),
             "show".into(),
             "--print-metadata-key=xa.metadata".into(),
             commit.clone(),
@@ -254,24 +254,57 @@ pub async fn prepare(
         timeout,
     )
     .await?;
-    // OSTree prints a GVariant string with escaped newlines. Compare exact key/value lines.
-    let unescaped = metadata.replace("\\n", "\n");
-    let expected_runtime = format!(
-        "runtime={}/{}/{}",
-        manifest.runtime, arch, manifest.runtime_version
-    );
-    if !unescaped.contains("[Application]\n")
-        || !unescaped
-            .lines()
-            .any(|l| l == format!("name={}", manifest.app_id))
-        || !unescaped.lines().any(|l| l == expected_runtime)
-    {
-        return Err(PublishError::Metadata);
-    }
+    // Validate both metadata used by summaries and the deployed /metadata file.
+    let unescaped = metadata
+        .trim()
+        .trim_matches(['\'', '"'])
+        .replace("\\n", "\n");
+    verify_application_metadata(&unescaped, &manifest, arch)?;
+    let deployed = command(
+        "ostree",
+        &[repo, "cat".into(), commit.clone(), "/metadata".into()],
+        timeout,
+    )
+    .await?;
+    verify_application_metadata(&deployed, &manifest, arch)?;
     Ok(PreparedRepository {
         workspace,
         path,
         ref_name,
         commit,
     })
+}
+
+pub fn verify_application_metadata(
+    text: &str,
+    manifest: &FlatpakManifest,
+    arch: Architecture,
+) -> Result<(), PublishError> {
+    let mut section = "";
+    let mut applications = 0;
+    let mut fields = std::collections::BTreeMap::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line;
+            if section == "[Application]" {
+                applications += 1;
+            }
+        } else if section == "[Application]"
+            && let Some((key, value)) = line.split_once('=')
+            && ["name", "runtime", "sdk"].contains(&key)
+            && fields.insert(key, value).is_some()
+        {
+            return Err(PublishError::Metadata);
+        }
+    }
+    let runtime = format!("{}/{}/{}", manifest.runtime, arch, manifest.runtime_version);
+    let sdk = format!("{}/{}/{}", manifest.sdk, arch, manifest.runtime_version);
+    if applications != 1
+        || fields.get("name") != Some(&manifest.app_id.as_str())
+        || fields.get("runtime") != Some(&runtime.as_str())
+        || fields.get("sdk") != Some(&sdk.as_str())
+    {
+        return Err(PublishError::Metadata);
+    }
+    Ok(())
 }

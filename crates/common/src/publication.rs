@@ -106,7 +106,9 @@ impl RepositoryRef {
         let parts: Vec<_> = app_id.split('.').collect();
         if parts.len() < 3
             || app_id.len() > 255
-            || !parts.iter().all(|p| component(p))
+            || !parts
+                .iter()
+                .all(|p| component(p) && p.as_bytes()[0].is_ascii_alphabetic())
             || !component(branch)
         {
             return Err("Invalid application ref");
@@ -124,7 +126,7 @@ fn component(s: &str) -> bool {
         && s != ".."
         && !s.starts_with('-')
         && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 impl TryFrom<String> for RepositoryRef {
     type Error = &'static str;
@@ -245,5 +247,6 @@ mod tests {
             assert!(RepositoryRef::try_from(bad.to_owned()).is_err());
         }
         assert!(RepositoryRef::new("org.example.Hello", Architecture::native(), "master").is_ok());
+        assert!(RepositoryRef::new("org.example.Hello", Architecture::native(), "1.2").is_ok());
     }
 }

@@ -16,6 +16,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let config = AppConfig::from_env()?;
+    if let Some(publishing) = &config.publishing {
+        publishing.repository.verify_key().await.context("Repository public key must match the configured fingerprint and contain no private keys")?;
+    }
     let address = config.bind;
     let executor = Arc::new(DockerExecutor::new(config.builder)?);
     let data_dir = config.data_dir;

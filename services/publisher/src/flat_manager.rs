@@ -40,6 +40,8 @@ impl FlatManagerClient {
             || url.query().is_some()
             || url.fragment().is_some()
             || token.trim().is_empty()
+            || !token.bytes().all(|b| b.is_ascii_graphic())
+            || base_url.contains(['\n', '\r'])
             || connect.is_zero()
             || request.is_zero()
         {
@@ -53,7 +55,7 @@ impl FlatManagerClient {
             .map_err(|_| PublishError::Malformed)?;
         Ok(Self {
             client,
-            base_url: base_url.trim_end_matches('/').into(),
+            base_url: url.as_str().trim_end_matches('/').into(),
             token,
         })
     }

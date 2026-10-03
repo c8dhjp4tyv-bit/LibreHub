@@ -89,6 +89,16 @@ impl FlatManagerPublisher {
             return Err(PublishError::Metadata);
         }
         let name = artifact::source_ref(&job.build, &job.manifest, self.architecture)?;
+        if !matches!(
+            record.status,
+            PublishStatus::Preparing | PublishStatus::Uploading
+        ) {
+            let root = job.data_dir.clone();
+            let build = job.build.clone();
+            tokio::task::spawn_blocking(move || artifact::verify_bundle(&root, &build, None))
+                .await
+                .map_err(|_| PublishError::Storage)??;
+        }
         let marker = format!("librehub://publication/{}", record.id);
         let mut prepared = None;
         if matches!(
