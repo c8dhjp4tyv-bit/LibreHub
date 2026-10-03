@@ -121,6 +121,7 @@ async fn success_collects_bundle_and_exposes_both_streams_without_host_mounts() 
     let calls = calls(dir.path());
     let create = &calls[0];
     assert!(create.contains(&"--cap-drop=ALL".into()));
+    assert!(create.contains(&"--security-opt=systempaths=unconfined".into()));
     assert!(create.contains(&"--user=10001:10001".into()));
     assert!(
         create.iter().all(|a| !a.starts_with("--mount")

@@ -23,13 +23,19 @@ includes artifact collection. Docker's own log driver is disabled, since the
 service persists bounded output itself.
 
 Flatpak's bubblewrap requires nested unprivileged namespaces. M1 relaxes Docker
-seccomp and AppArmor (`seccomp=unconfined`, `apparmor=unconfined`) so it can create
-those namespaces while retaining a nonroot outer container. This weakens the
-outer syscall/LSM boundary. The host must permit unprivileged user namespaces;
+seccomp, AppArmor, and protected system paths (`seccomp=unconfined`,
+`apparmor=unconfined`, `systempaths=unconfined`) so it can create those namespaces
+and mount a nested `/proc` while retaining a nonroot outer container. Docker's
+masked/read-only proc paths otherwise prevent bubblewrap's proc mount. This
+weakens the outer syscall/LSM boundary and removes Docker's system-path masks;
+it does not grant capabilities or share the host PID namespace. The host must
+permit unprivileged user namespaces;
 some Ubuntu hosts also restrict them through AppArmor. **Do not solve namespace
 failures by adding privileged mode or SYS_ADMIN.** Use a dedicated host configured
 for this workload, or a stronger VM executor. See
-[Docker seccomp documentation](https://docs.docker.com/engine/security/seccomp/)
+[Docker seccomp documentation](https://docs.docker.com/engine/security/seccomp/),
+[Docker's system-path option](https://docs.docker.com/reference/cli/docker/container/run/#security-configuration),
+[Moby's nested rootless configuration](https://github.com/moby/buildkit/blob/master/docs/rootless.md),
 and [Flatpak's sandbox option](https://docs.flatpak.org/en/latest/flatpak-builder-command-reference.html).
 
 The default build network is `none`. Runtime installation happens only while

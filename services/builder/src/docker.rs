@@ -144,6 +144,7 @@ impl DockerExecutor {
             // bubblewrap needs nested unprivileged namespaces. No SYS_ADMIN or privileged mode.
             "--security-opt=seccomp=unconfined",
             "--security-opt=apparmor=unconfined",
+            "--security-opt=systempaths=unconfined",
             "--pids-limit=512",
             "--memory=4g",
             "--memory-swap=4g",
