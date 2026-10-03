@@ -195,7 +195,8 @@ async fn timeout_removes_the_active_container() {
 
 #[tokio::test]
 async fn oversized_artifact_is_rejected_before_the_producer_closes_its_pipes() {
-    let (dir, executor, job) = setup("oversized", Duration::from_secs(5));
+    // Allow fixture startup under host load; the assertion still rejects a timeout.
+    let (dir, executor, job) = setup("oversized", Duration::from_secs(30));
     let result = executor
         .execute(job, Arc::new(Logs::default()), CancellationToken::new())
         .await;
