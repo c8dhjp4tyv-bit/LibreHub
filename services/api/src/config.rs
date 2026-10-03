@@ -133,3 +133,28 @@ fn number(key: &str, default: u64, max: u64) -> anyhow::Result<u64> {
     }
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn configuration_debug_never_prints_credentials() {
+        let config = PublishingConfig {
+            manager_url: "http://localhost:8081".into(),
+            token: "private-publisher-token".into(),
+            repository: RepositoryConfig {
+                public_base_url: "http://localhost:8090".into(),
+                public_key: vec![],
+                fingerprint: "A".repeat(40),
+                runtime_repo_url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+            },
+            concurrency: 1,
+            connect_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(60),
+            operation_timeout: Duration::from_secs(900),
+        };
+        let diagnostic = format!("{config:?}");
+        assert!(diagnostic.contains("[REDACTED]"));
+        assert!(!diagnostic.contains("private-publisher-token"));
+    }
+}

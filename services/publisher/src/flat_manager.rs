@@ -109,7 +109,12 @@ impl FlatManagerClient {
         Err(PublishError::Unavailable)
     }
     pub async fn ready(&self) -> bool {
-        self.list("org.librehub.Readiness").await.is_ok()
+        // Authentication and DB lookup occur before the 404; this avoids
+        // assuming the publisher token permits a particular application prefix.
+        matches!(
+            self.get(i32::MAX).await,
+            Ok(_) | Err(PublishError::Rejected(404))
+        )
     }
     pub async fn list(&self, app_id: &str) -> Result<Vec<RemoteBuild>, PublishError> {
         // App IDs have been validated before use; do not interpolate arbitrary request data.

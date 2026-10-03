@@ -2,7 +2,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::State,
-    http::{Method, StatusCode},
+    http::{Method, StatusCode, Uri},
     response::IntoResponse,
     routing::any,
 };
@@ -20,10 +20,18 @@ struct Mock {
     mode: &'static str,
     calls: Arc<AtomicUsize>,
 }
-async fn handler(State(mock): State<Mock>, method: Method, body: Bytes) -> impl IntoResponse {
+async fn handler(
+    State(mock): State<Mock>,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> impl IntoResponse {
     let call = mock.calls.fetch_add(1, Ordering::SeqCst);
     assert!(body.len() < 8192);
     match mock.mode {
+        "scope-safe-ready" => { assert_eq!(uri.path(), "/api/v1/build/2147483647"); (StatusCode::NOT_FOUND, "not found".to_owned()) },
+        "partial" if uri.path().ends_with("/missing_objects") => { let request: serde_json::Value = serde_json::from_slice(&body).unwrap(); (StatusCode::OK, serde_json::json!({"missing":request["wanted"]}).to_string()) },
+        "partial" => (StatusCode::OK, "[]".to_owned()),
         "unauthorized" => (StatusCode::UNAUTHORIZED, "token-must-never-appear".to_owned()),
         "malformed" => (StatusCode::OK, "not json".to_owned()),
         "timeout" => { tokio::time::sleep(Duration::from_millis(100)).await; (StatusCode::OK, "[]".to_owned()) },
@@ -126,4 +134,34 @@ fn credentials_in_urls_and_empty_tokens_are_rejected() {
             Err(PublishError::Malformed)
         ));
     }
+}
+
+#[tokio::test]
+async fn readiness_does_not_require_an_unrelated_application_prefix() {
+    let (client, calls, task) = server("scope-safe-ready").await;
+    assert!(client.ready().await);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    task.abort();
+    let (client, _, task) = server("unauthorized").await;
+    assert!(!client.ready().await);
+    task.abort();
+}
+
+#[tokio::test]
+async fn partial_upload_cannot_advance_to_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects/aa");
+    std::fs::create_dir_all(&objects).unwrap();
+    std::fs::write(
+        objects.join(format!("{}.dirtree", "a".repeat(62))),
+        b"object",
+    )
+    .unwrap();
+    let (client, calls, task) = server("partial").await;
+    assert!(matches!(
+        client.upload(7, dir.path()).await,
+        Err(PublishError::PartialUpload)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    task.abort();
 }
