@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+arch="$1"
+app_id="$2"
+# A fixed manifest path and argument arrays keep shell metacharacters out of invocations.
+runtime=$(jq -er '.runtime' /work/manifest.json)
+sdk=$(jq -er '.sdk' /work/manifest.json)
+version=$(jq -er '."runtime-version"' /work/manifest.json)
+branch=$(jq -er '.branch // "master"' /work/manifest.json)
+flatpak info --user --arch="$arch" "$runtime//$version" >/dev/null
+flatpak info --user --arch="$arch" "$sdk//$version" >/dev/null
+mkdir -p /work/run /work/output
+chmod 700 /work/run
+flatpak-builder --user --arch="$arch" --sandbox --disable-rofiles-fuse \
+    --force-clean --repo=/work/repo --default-branch=master /work/build /work/manifest.json
+flatpak build-bundle --arch="$arch" /work/repo /work/output/application.flatpak "$app_id" "$branch"
