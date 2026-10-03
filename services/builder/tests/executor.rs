@@ -152,3 +152,33 @@ async fn cancellation_and_timeout_stop_and_force_remove_real_process() {
         }
     }
 }
+
+#[tokio::test]
+async fn oversized_transfer_fails_promptly_without_waiting_for_pipe_eof() {
+    let dir = tempfile::tempdir().unwrap();
+    let _initial = executor(dir.path(), "oversize");
+    // A small cap avoids writing a GiB just to exercise the bounded stream reader.
+    let executor = DockerExecutor::new(DockerConfig {
+        binary: dir.path().join("docker.py"),
+        max_artifact_bytes: 128,
+        ..DockerConfig::default()
+    })
+    .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        executor.execute(
+            job(dir.path()),
+            Arc::new(Captured::default()),
+            CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("oversized stream deadlocked");
+    match result {
+        Err(ExecutorError::Infrastructure(error)) => {
+            assert!(error.to_string().contains("size limit"))
+        }
+        other => panic!("Unexpected outcome: {other:?}"),
+    }
+    assert!(dir.path().join("removed").exists());
+}

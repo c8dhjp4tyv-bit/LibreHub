@@ -311,17 +311,20 @@ impl DockerExecutor {
         let limit = self.config.max_artifact_bytes.saturating_add(1024 * 1024);
         let work = async {
             let mut limited = (&mut stdout).take(limit + 1);
-            let (copied, ()) = tokio::try_join!(
+            let ((), ()) = tokio::try_join!(
                 async {
-                    tokio::io::copy(&mut limited, &mut output)
+                    let copied = tokio::io::copy(&mut limited, &mut output)
                         .await
-                        .context("Artifact copy failed")
+                        .context("Artifact copy failed")?;
+                    // Fail inside this branch: waiting for stderr first could deadlock
+                    // a producer blocked on stdout after the transfer cap is reached.
+                    if copied > limit {
+                        bail!("Artifact exceeds configured size limit");
+                    }
+                    Ok::<_, anyhow::Error>(())
                 },
                 pump(stderr, LogStream::Stderr, logs)
             )?;
-            if copied > limit {
-                bail!("Artifact exceeds configured size limit");
-            }
             let status = child
                 .wait()
                 .await

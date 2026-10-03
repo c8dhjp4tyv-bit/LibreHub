@@ -33,6 +33,11 @@ elif args[0] == "start":
 elif args[0] == "inspect":
     print("23" if mode == "failure" else "0")
 elif args[0] == "cp" and args[-1] == "-":
+    if mode == "oversize":
+        for _ in range(10000):
+            sys.stdout.buffer.write(b"x" * 8192)
+            sys.stdout.buffer.flush()
+        sys.exit(0)
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
         data = b"Flatpak bundle"
         entry = tarfile.TarInfo("application.flatpak")
