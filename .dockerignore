@@ -3,3 +3,5 @@
 !infra/docker/
 !infra/docker/worker.Dockerfile
 !infra/docker/librehub-build
+!infra/docker/flat-manager.Dockerfile
+!infra/docker/bootstrap-repository.py
