@@ -10,12 +10,14 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from publishing_faults import PublishingFaults
 
 ROOT = Path(__file__).resolve().parents[1]
 API = 'http://127.0.0.1:8080'
 PUBLIC = os.environ.get('LIBREHUB_PUBLIC_BASE_URL', 'http://localhost:8090').rstrip('/')
 
 def request(path, data=None):
+    faults.reconcile_process()
     raw = None if data is None else json.dumps(data).encode()
     with urllib.request.urlopen(urllib.request.Request(API + path, data=raw, headers={'Content-Type': 'application/json'}), timeout=90) as response:
         return json.load(response)
@@ -23,7 +25,11 @@ def request(path, data=None):
 def wait(path, terminal=True):
     end = time.monotonic() + 1200
     while time.monotonic() < end:
-        record = request(path)
+        try:
+            record = request(path)
+        except (urllib.error.URLError, ConnectionResetError, ConnectionRefusedError):
+            time.sleep(0.5)
+            continue
         if terminal and record['status'] in ['succeeded', 'failed', 'cancelled']:
             assert record['status'] == 'succeeded', record
             return record
@@ -47,10 +53,10 @@ with tempfile.TemporaryDirectory(prefix='librehub-e2e-') as temp:
     env = os.environ.copy()
     env['LIBREHUB_DATA_DIR'] = str(work / 'data')
     log = open(work / 'api.log', 'w+')
-    process = subprocess.Popen([str(ROOT / 'target/debug/librehub-api')], env=env, stdout=log, stderr=subprocess.STDOUT)
+    faults = PublishingFaults(env['LIBREHUB_FLAT_MANAGER_URL'], str(ROOT / 'target/debug/librehub-api'), env, log)
     try:
         for _ in range(120):
-            if process.poll() is not None:
+            if faults.process.poll() is not None:
                 raise RuntimeError('LibreHub API stopped')
             try:
                 if request('/ready')['ready']:
@@ -65,6 +71,16 @@ with tempfile.TemporaryDirectory(prefix='librehub-e2e-') as temp:
         build = wait('/api/v1/builds/' + build['id'])
         publication = request(f'/api/v1/builds/{build["id"]}/publish', {'channel': 'stable'})
         publication = wait('/api/v1/publishes/' + publication['id'])
+        assert faults.crashes == ['preparing', 'uploading', 'committing', 'publishing'], faults.crashes
+        assert faults.restarts == 4
+        # Query the actual backend: lost create replies must not produce duplicate builds.
+        token_path = env.get('LIBREHUB_FLAT_MANAGER_TOKEN_FILE')
+        token = Path(token_path).read_text().strip() if token_path else env['LIBREHUB_FLAT_MANAGER_TOKEN']
+        query = urllib.request.Request(f'{faults.manager_url}/api/v1/build?app-id=org.librehub.Hello', headers={'Authorization': 'Bearer ' + token})
+        with urllib.request.urlopen(query, timeout=30) as response:
+            remote_builds = json.load(response)
+        marker = 'librehub://publication/' + publication['id']
+        assert len([b for b in remote_builds if b.get('build_log_url') == marker]) == 1
         duplicate = request(f'/api/v1/builds/{build["id"]}/publish', {'channel': 'stable'})
         assert duplicate['id'] == publication['id']
         after = hashlib.sha256(fetch('/repo/stable/summary')).hexdigest()
@@ -102,7 +118,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-e2e-') as temp:
         beta = wait('/api/v1/publishes/' + beta['id'])
         run(['flatpak', 'remote-add', '--user', 'librehub-beta', PUBLIC + '/librehub-beta.flatpakrepo'], client)
         assert run(['flatpak', 'remote-info', '--user', '--show-commit', 'librehub-beta', 'org.librehub.Hello'], client) == beta['result']['published_ref']['commit']
-        proof = {'build_id': build['id'], 'publication_id': publication['id'], 'flat_manager_build_id': publication['flat_manager_build_id'], 'ref': ref, 'commit': commit, 'signing_fingerprint': publication['result']['signing']['fingerprint'], 'summary_before': before, 'summary_after': after, 'installed': True, 'executed': True, 'signature_verified': True, 'beta_verified': True}
+        proof = {'build_id': build['id'], 'publication_id': publication['id'], 'flat_manager_build_id': publication['flat_manager_build_id'], 'ref': ref, 'commit': commit, 'signing_fingerprint': publication['result']['signing']['fingerprint'], 'summary_before': before, 'summary_after': after, 'installed': True, 'executed': True, 'signature_verified': True, 'beta_verified': True, 'recovered_after_crashes': faults.crashes, 'remote_create_count': 1}
         (ROOT / 'data/e2e-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
         print(json.dumps(proof, indent=2))
     except BaseException:
@@ -111,10 +127,11 @@ with tempfile.TemporaryDirectory(prefix='librehub-e2e-') as temp:
         print(log.read()[-16000:])
         raise
     finally:
-        process.send_signal(signal.SIGTERM)
+        faults.process.send_signal(signal.SIGTERM)
         try:
-            process.wait(timeout=90)
+            faults.process.wait(timeout=90)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+            faults.process.kill()
+            faults.process.wait()
+        faults.close()
         log.close()

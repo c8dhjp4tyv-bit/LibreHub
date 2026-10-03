@@ -33,6 +33,7 @@ secret = secret_file.read_text().strip()
 repos = {}
 for channel in ['stable', 'beta']:
     path = public / 'repo' / channel
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not (path / 'config').exists():
         subprocess.run(['ostree', f'--repo={path}', 'init', '--mode=archive-z2'], check=True)
     subprocess.run(['flatpak', 'build-update-repo', f'--gpg-homedir={state / "gnupg"}',

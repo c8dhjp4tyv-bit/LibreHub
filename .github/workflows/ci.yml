@@ -23,7 +23,7 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
       - run: docker compose config --quiet
-      - run: python3 -m py_compile scripts/test-publish-install.py infra/docker/bootstrap-repository.py
+      - run: python3 -m py_compile scripts/test-publish-install.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
   worker-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
