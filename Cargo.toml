@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/common", "services/validator", "services/builder", "services/api"]
+members = ["crates/common", "services/validator", "services/builder", "services/api", "services/publisher"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,7 @@ edition = "2024"
 librehub-common = { path = "crates/common" }
 librehub-validator = { path = "services/validator" }
 librehub-builder = { path = "services/builder" }
+librehub-publisher = { path = "services/publisher" }
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
