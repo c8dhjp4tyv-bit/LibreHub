@@ -1,7 +1,6 @@
 use anyhow::Context;
 use librehub_api::{
-    ApiState, config::AppConfig, publishing::Publishing, router_with_publisher, store::Store,
-    worker::Supervisor,
+    ApiState, config::AppConfig, publishing::Publishing, store::Store, worker::Supervisor,
 };
 use librehub_builder::DockerExecutor;
 use librehub_common::Architecture;
@@ -48,12 +47,24 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .map(|service| tokio::spawn(service.run()));
     tracing::info!(%address, "LibreHub API listening");
-    let app = router_with_publisher(
+    let source_worker = librehub_api::source_worker::SourceWorker::new(
+        supervisor.clone(),
+        Arc::new(librehub_api::source_worker::git_from_env()?),
+        publishing.clone(),
+    );
+    source_worker.recover().await?;
+    let key = supervisor.store.platform_key().await?;
+    let source_task = tokio::spawn(source_worker.clone().run());
+    let app = librehub_api::platform::router(
         ApiState {
             supervisor: supervisor.clone(),
             architecture: Architecture::native(),
         },
         publishing,
+        librehub_api::platform::Platform {
+            worker: source_worker,
+            key,
+        },
     );
     let shutdown = supervisor.shutdown.clone();
     let worker_shutdown = shutdown.clone();
@@ -79,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     signal.abort();
     result?;
     worker_result?;
+    source_task.await.context("Source worker task failed")??;
     if let Some(task) = publishing_task {
         task.await.context("Publisher task failed")??;
     }

@@ -17,6 +17,23 @@ fn error(errors: &mut Vec<ValidationError>, field: &str, code: &str, message: &s
 }
 
 pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, ValidationResult> {
+    validate_context(input, format, false)
+}
+
+/// Same M1 policy with bounded local source paths enabled for prepared M3 snapshots.
+/// The source subsystem and worker must independently check file membership.
+pub fn validate_project(
+    input: &str,
+    format: ManifestFormat,
+) -> Result<FlatpakManifest, ValidationResult> {
+    validate_context(input, format, true)
+}
+
+fn validate_context(
+    input: &str,
+    format: ManifestFormat,
+    local: bool,
+) -> Result<FlatpakManifest, ValidationResult> {
     let mut errors = Vec::new();
     if input.len() > MAX_MANIFEST_BYTES {
         error(
@@ -121,7 +138,9 @@ pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, 
         );
     }
     match root.get("modules").and_then(Value::as_array) {
-        Some(modules) if !modules.is_empty() => check_modules(modules, "modules", 0, &mut errors),
+        Some(modules) if !modules.is_empty() => {
+            check_modules(modules, "modules", 0, &mut errors, local)
+        }
         _ => error(
             &mut errors,
             "modules",
@@ -129,7 +148,7 @@ pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, 
             "At least one inline module is required",
         ),
     }
-    check_options(&value, "$", 0, &mut errors);
+    check_options(&value, "$", 0, &mut errors, local);
     if errors.is_empty() {
         match serde_json::from_value(value) {
             Ok(manifest) => return Ok(manifest),
@@ -212,7 +231,13 @@ fn safe_path(s: &str) -> bool {
         && !s.contains(['\\', ':', '\0'])
         && s.split('/').all(|p| !p.is_empty() && p != "." && p != "..")
 }
-fn check_modules(modules: &[Value], field: &str, depth: usize, errors: &mut Vec<ValidationError>) {
+fn check_modules(
+    modules: &[Value],
+    field: &str,
+    depth: usize,
+    errors: &mut Vec<ValidationError>,
+    local: bool,
+) {
     if depth > MAX_DEPTH || errors.len() >= 100 {
         return;
     }
@@ -252,7 +277,7 @@ fn check_modules(modules: &[Value], field: &str, depth: usize, errors: &mut Vec<
         if let Some(nested) = module.get("modules") {
             match nested.as_array() {
                 Some(nested) => {
-                    check_modules(nested, &format!("{path}.modules"), depth + 1, errors)
+                    check_modules(nested, &format!("{path}.modules"), depth + 1, errors, local)
                 }
                 None => error(
                     errors,
@@ -302,7 +327,7 @@ fn check_modules(modules: &[Value], field: &str, depth: usize, errors: &mut Vec<
                         if errors.len() >= 100 {
                             break;
                         }
-                        check_source(source, &format!("{path}.sources[{j}]"), errors);
+                        check_source(source, &format!("{path}.sources[{j}]"), errors, local);
                     }
                 }
                 None => error(
@@ -315,7 +340,7 @@ fn check_modules(modules: &[Value], field: &str, depth: usize, errors: &mut Vec<
         }
     }
 }
-fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>) {
+fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>, local: bool) {
     let Some(source) = source.as_object() else {
         error(
             errors,
@@ -327,7 +352,7 @@ fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>) 
     };
     let kind = source.get("type").and_then(Value::as_str).unwrap_or("");
     if ![
-        "archive", "git", "file", "script", "inline", "patch", "shell",
+        "archive", "git", "file", "script", "inline", "patch", "shell", "dir",
     ]
     .contains(&kind)
     {
@@ -355,9 +380,44 @@ fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>) 
             "Only HTTPS source URLs without embedded credentials are supported",
         );
     }
+    if source.contains_key("path")
+        && (!local
+            || !["file", "dir", "archive", "patch"].contains(&kind)
+            || source.contains_key("url")
+            || !source
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(safe_path))
+    {
+        error(
+            errors,
+            field,
+            "unsafe_local_source",
+            "Local sources require a prepared snapshot and a safe relative path",
+        );
+    }
+    if kind == "dir"
+        && (!local
+            || !source
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(safe_path))
+    {
+        error(
+            errors,
+            field,
+            "unsafe_local_source",
+            "Directory source requires a prepared snapshot",
+        );
+    }
     match kind {
         "archive" | "git" | "file" | "patch" => {
-            if !source.get("url").is_some_and(Value::is_string) {
+            let local_source = local
+                && source
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(safe_path);
+            if !local_source && !source.get("url").is_some_and(Value::is_string) {
                 error(
                     errors,
                     &format!("{field}.url"),
@@ -365,7 +425,8 @@ fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>) 
                     "A remote URL is required; local files are not accepted in M1",
                 );
             }
-            if kind != "git"
+            if !local_source
+                && kind != "git"
                 && !source
                     .get("sha256")
                     .and_then(Value::as_str)
@@ -407,7 +468,13 @@ fn check_source(source: &Value, field: &str, errors: &mut Vec<ValidationError>) 
         _ => {}
     }
 }
-fn check_options(value: &Value, field: &str, depth: usize, errors: &mut Vec<ValidationError>) {
+fn check_options(
+    value: &Value,
+    field: &str,
+    depth: usize,
+    errors: &mut Vec<ValidationError>,
+    local: bool,
+) {
     if errors.len() >= 100 {
         return;
     }
@@ -446,7 +513,7 @@ fn check_options(value: &Value, field: &str, depth: usize, errors: &mut Vec<Vali
                         "Option is unsupported for standalone M1 application builds",
                     );
                 }
-                if ["path", "paths", "include"].contains(&key.as_str()) {
+                if ["paths", "include"].contains(&key.as_str()) || (key == "path" && !local) {
                     error(
                         errors,
                         &path,
@@ -454,7 +521,7 @@ fn check_options(value: &Value, field: &str, depth: usize, errors: &mut Vec<Vali
                         "M1 accepts standalone manifests without local file references",
                     );
                 }
-                if ["dest", "dest-filename", "subdir"].contains(&key.as_str())
+                if ["dest", "dest-filename", "subdir", "path"].contains(&key.as_str())
                     && !val.as_str().is_some_and(safe_path)
                 {
                     error(
@@ -490,7 +557,7 @@ fn check_options(value: &Value, field: &str, depth: usize, errors: &mut Vec<Vali
                         ),
                     }
                 }
-                check_options(val, &path, depth + 1, errors);
+                check_options(val, &path, depth + 1, errors, local);
             }
         }
         Value::Array(values) => {
@@ -498,7 +565,7 @@ fn check_options(value: &Value, field: &str, depth: usize, errors: &mut Vec<Vali
                 if errors.len() >= 100 {
                     break;
                 }
-                check_options(val, &format!("{field}[{i}]"), depth + 1, errors);
+                check_options(val, &format!("{field}[{i}]"), depth + 1, errors, local);
             }
         }
         _ => {}

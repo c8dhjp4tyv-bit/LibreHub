@@ -1,0 +1,20 @@
+[package]
+name = "librehub-source"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+librehub-common.workspace = true
+librehub-validator.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+url = "2"
+libc = "0.2"
+axum.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+uuid.workspace = true

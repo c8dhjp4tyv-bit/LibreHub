@@ -135,6 +135,19 @@ impl DockerExecutor {
             .prefix(&format!("{}-", job.id))
             .tempdir_in(&scratch_root)
             .context("Cannot create private workspace")?;
+        let source_path = scratch.path().join("source");
+        if let Some(snapshot) = job.source_snapshot.clone() {
+            let root = job.data_dir.clone();
+            let id = job.id;
+            let destination = source_path.clone();
+            let manifest = job.manifest.clone();
+            tokio::task::spawn_blocking(move || {
+                librehub_source::copy_snapshot(&root, id, &snapshot, &destination, &manifest)
+            })
+            .await
+            .context("Source transfer task failed")?
+            .map_err(|_| anyhow::anyhow!("Source snapshot integrity failed"))?;
+        }
         let manifest_path = scratch.path().join("manifest.json");
         tokio::fs::write(
             &manifest_path,
@@ -208,6 +221,18 @@ impl DockerExecutor {
             cancel,
         )
         .await?;
+        if job.source_snapshot.is_some() {
+            self.run(
+                &[
+                    "cp".into(),
+                    source_path.to_string_lossy().into_owned(),
+                    format!("{name}:/work/source"),
+                ],
+                logs.clone(),
+                cancel,
+            )
+            .await?;
+        }
         self.run(
             &["start".into(), "--attach".into(), name.clone()],
             logs.clone(),

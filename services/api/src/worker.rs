@@ -97,8 +97,12 @@ impl Supervisor {
         }
         let manifest = self.store.manifest(id).await?;
         // Revalidate stored input so recovery cannot bypass the validator.
-        if let Err(validation) =
-            librehub_validator::validate(&serde_json::to_string(&manifest)?, ManifestFormat::Json)
+        let validate = if claimed.provenance.is_some() {
+            librehub_validator::validate_project
+        } else {
+            librehub_validator::validate
+        };
+        if let Err(validation) = validate(&serde_json::to_string(&manifest)?, ManifestFormat::Json)
         {
             self.store
                 .transition(
@@ -137,6 +141,7 @@ impl Supervisor {
             manifest,
             architecture: record.architecture,
             data_dir: self.store.data_dir.clone(),
+            source_snapshot: record.provenance.as_ref().map(|p| p.snapshot.clone()),
         };
         let exec_cancel = cancel.clone();
         let exec = executor.clone();

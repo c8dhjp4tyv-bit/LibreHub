@@ -42,6 +42,7 @@ pub struct BuildJob {
     pub manifest: FlatpakManifest,
     pub architecture: Architecture,
     pub data_dir: PathBuf,
+    pub source_snapshot: Option<librehub_common::SourceSnapshot>,
 }
 #[async_trait]
 pub trait BuildExecutor: Send + Sync {

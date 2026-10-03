@@ -33,7 +33,12 @@ pub fn source_ref(
     {
         return Err(PublishError::Metadata);
     }
-    librehub_validator::validate(
+    let validate = if build.provenance.is_some() {
+        librehub_validator::validate_project
+    } else {
+        librehub_validator::validate
+    };
+    validate(
         &serde_json::to_string(manifest).map_err(|_| PublishError::Metadata)?,
         ManifestFormat::Json,
     )

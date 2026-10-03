@@ -32,6 +32,7 @@ async fn builds_hello_into_a_real_bundle() {
     let result = executor
         .execute(
             BuildJob {
+                source_snapshot: None,
                 id,
                 manifest,
                 architecture: Architecture::native(),
