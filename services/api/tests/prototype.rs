@@ -524,4 +524,88 @@ async fn cleanup_failure_stops_queue_and_blocks_recovery_until_container_is_remo
     let recovered = Fake::new(Mode::Success);
     f.supervisor.recover(recovered.as_ref()).await.unwrap();
     assert_eq!(recovered.cleaned.load(Ordering::SeqCst), 1);
+    assert!(f.supervisor.store.interrupted().await.unwrap().is_empty());
+    // A later daemon outage must not revisit containers already confirmed removed.
+    f.supervisor.recover(&CleanupFailure).await.unwrap();
+    assert_eq!(
+        f.supervisor
+            .store
+            .get(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+            .code,
+        "container_cleanup_failed"
+    );
+}
+
+#[tokio::test]
+async fn restart_reconciles_terminal_cancelled_and_failed_artifacts() {
+    let f = Fixture::new();
+    for status in [BuildStatus::Cancelled, BuildStatus::Failed] {
+        let id = f.submit().await;
+        f.supervisor
+            .store
+            .transition(id, status, None, None)
+            .await
+            .unwrap();
+        let artifacts = f
+            .supervisor
+            .store
+            .data_dir
+            .join(format!("builds/{id}/artifacts"));
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(artifacts.join("application.flatpak"), b"orphaned output").unwrap();
+        // Terminal records don't require a container daemon to reconcile files.
+        f.supervisor.recover(&CleanupFailure).await.unwrap();
+        assert!(!artifacts.exists());
+        assert_eq!(
+            f.supervisor.store.get(id).await.unwrap().unwrap().status,
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn old_database_migrates_cleanup_work_only_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let manifest = librehub_validator::validate(MANIFEST, ManifestFormat::Json).unwrap();
+    let id = store
+        .insert(manifest, Architecture::native())
+        .await
+        .unwrap()
+        .id;
+    store
+        .transition(
+            id,
+            BuildStatus::Failed,
+            None,
+            Some(BuildError {
+                code: "container_cleanup_failed".into(),
+                message: "old failure".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(dir.path().join("builds.sqlite3")).unwrap();
+    db.execute_batch("ALTER TABLE builds DROP COLUMN cleanup_pending")
+        .unwrap();
+    drop(db);
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.interrupted().await.unwrap(), vec![id]);
+    Supervisor::new(store.clone())
+        .recover(Fake::new(Mode::Success).as_ref())
+        .await
+        .unwrap();
+    drop(store);
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.interrupted().await.unwrap().is_empty());
+    Supervisor::new(store)
+        .recover(&CleanupFailure)
+        .await
+        .unwrap();
 }

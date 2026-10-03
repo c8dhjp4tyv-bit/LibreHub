@@ -52,6 +52,22 @@ impl Store {
                 build_id TEXT NOT NULL REFERENCES builds(id), sequence INTEGER NOT NULL,
                 entry TEXT NOT NULL, PRIMARY KEY(build_id, sequence));",
         )?;
+        // Migrate existing M1 databases once; preserve the historical error for audit.
+        let has_cleanup_pending = db
+            .prepare("PRAGMA table_info(builds)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "cleanup_pending");
+        if !has_cleanup_pending {
+            db.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE builds ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0;
+                 UPDATE builds SET cleanup_pending=1
+                    WHERE json_extract(record, '$.error.code')='container_cleanup_failed';
+                 COMMIT;",
+            )?;
+        }
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             _lock: Arc::new(lock),
@@ -145,7 +161,32 @@ impl Store {
     pub async fn interrupted(&self) -> anyhow::Result<Vec<BuildId>> {
         self.run(|db| {
             let mut q =
-                db.prepare("SELECT id FROM builds WHERE status IN ('validating','building') OR json_extract(record, '$.error.code')='container_cleanup_failed'")?;
+                db.prepare("SELECT id FROM builds WHERE status IN ('validating','building') OR cleanup_pending=1")?;
+            let ids = q
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.into_iter()
+                .map(|id| id.parse().map_err(Into::into))
+                .collect()
+        })
+        .await
+    }
+    /// Persist confirmed container removal without changing the build's historical error.
+    pub async fn clear_cleanup_pending(&self, id: BuildId) -> anyhow::Result<()> {
+        self.run(move |db| {
+            db.execute(
+                "UPDATE builds SET cleanup_pending=0 WHERE id=?1",
+                [id.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+    /// Reconcile residual output after a crash between terminalization and deletion.
+    pub async fn discarded_artifacts(&self) -> anyhow::Result<Vec<BuildId>> {
+        self.run(|db| {
+            let mut q =
+                db.prepare("SELECT id FROM builds WHERE status IN ('failed','cancelled')")?;
             let ids = q
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -199,6 +240,16 @@ impl Store {
             };
             record.error = error;
             write_record(&tx, &record)?;
+            if record
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == "container_cleanup_failed")
+            {
+                tx.execute(
+                    "UPDATE builds SET cleanup_pending=1 WHERE id=?1",
+                    [id.to_string()],
+                )?;
+            }
             tx.commit()?;
             Ok(record)
         })

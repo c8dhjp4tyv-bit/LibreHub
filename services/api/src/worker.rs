@@ -36,6 +36,7 @@ impl Supervisor {
         for id in self.store.interrupted().await? {
             // Fail startup if cleanup is uncertain. Do not launch duplicate builds.
             executor.cleanup(id).await?;
+            self.store.clear_cleanup_pending(id).await?;
             if self
                 .store
                 .get(id)
@@ -57,6 +58,11 @@ impl Supervisor {
                     }),
                 )
                 .await?;
+        }
+        // Terminal cancellation may have committed immediately before a process crash.
+        // Reconcile it on every startup, retrying failed deletions before serving requests.
+        for id in self.store.discarded_artifacts().await? {
+            self.remove_artifacts(id).await?;
         }
         // Only service-owned UUID workspaces live here; the data directory is trusted.
         let scratch = self.store.data_dir.join("tmp");

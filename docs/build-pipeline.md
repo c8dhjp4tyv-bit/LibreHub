@@ -39,7 +39,9 @@ Succeeded / Failed / Cancelled
 7. The executor independently inspects the container exit code. Only a zero exit
    enters artifact collection. Docker's copy archive is size-limited; extraction
    accepts exactly one regular `application.flatpak` entry, rejecting symlinks,
-   extra files, unexpected paths, oversized and empty files. It streams to a
+   extra files, unexpected paths, oversized and empty files. PAX/GNU metadata is
+   capped at 64 KiB and 16 headers before parsing; effective paths are validated,
+   and PAX size must match the file header. It streams to a
    temporary file, hashes SHA-256 and atomically preserves it under
    `data/builds/<UUID>/artifacts/` without overwriting an existing artifact.
 8. Every outcome removes the container, including failed creation, timeout and
@@ -49,9 +51,11 @@ Succeeded / Failed / Cancelled
    code (when available), result or descriptive error.
 
 The build deadline covers container creation, build and artifact copy. Cleanup has
-separate short deadlines. Cancelled or interrupted builds can leave unreferenced
-artifact files if completion raced with teardown or database commit; administrators
-should reconcile terminal metadata before retention cleanup. There is no automatic
+separate short deadlines. Startup removes residual artifacts for failed/cancelled
+builds, including a crash after a cancellation commit. Failed deletion blocks
+startup until it can be retried successfully. Confirmed container cleanup clears
+a durable pending flag while preserving the historical error; old databases are
+migrated automatically. There is no automatic
 retry, resumable active build, automatic retention, or artifact HTTP download in M1.
 Container writable-layer disk consumption also requires host-level quotas/monitoring.
 

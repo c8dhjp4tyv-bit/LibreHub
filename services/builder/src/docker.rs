@@ -5,7 +5,7 @@ use chrono::Utc;
 use librehub_common::{Architecture, Artifact, BuildId, BuildLogEntry, BuildResult, LogStream};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -404,13 +404,62 @@ fn extract_bundle(
     relative: String,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Artifact> {
-    let mut tar = tar::Archive::new(std::fs::File::open(archive)?);
+    let mut file = std::fs::File::open(archive)?;
+    // tar's metadata preprocessing allocates the complete extension payload. Bound
+    // it before enabling preprocessing, and prevent PAX size overrides from making
+    // the second pass interpret unchecked bytes inside the bundle as new headers.
+    {
+        let mut raw = tar::Archive::new(&mut file);
+        let mut metadata_bytes = 0_u64;
+        let mut file_count = 0;
+        let mut pax_sizes = Vec::new();
+        for (index, entry) in raw.entries_with_seek()?.raw(true).enumerate() {
+            if cancel.is_cancelled() {
+                bail!("Artifact extraction cancelled");
+            }
+            if index >= 17 {
+                bail!("Too many artifact archive headers");
+            }
+            let mut entry = entry?;
+            let kind = entry.header().entry_type();
+            if kind.is_gnu_longname() || kind.is_gnu_longlink() || kind.is_pax_local_extensions() {
+                metadata_bytes = metadata_bytes.saturating_add(entry.size());
+                if metadata_bytes > 64 * 1024 {
+                    bail!("Artifact archive metadata exceeds 64 KiB");
+                }
+                if kind.is_pax_local_extensions()
+                    && let Some(extensions) = entry.pax_extensions()?
+                {
+                    for extension in extensions {
+                        let extension = extension?;
+                        if extension.key_bytes() == b"size" {
+                            pax_sizes.push(
+                                std::str::from_utf8(extension.value_bytes())?.parse::<u64>()?,
+                            );
+                        }
+                    }
+                }
+            } else {
+                file_count += 1;
+                if !kind.is_file() || file_count != 1 || entry.size() > max_bytes {
+                    bail!("Artifact archive must contain one bounded regular file");
+                }
+                if pax_sizes.iter().any(|size| *size != entry.size()) {
+                    bail!("Artifact PAX size must match its file header");
+                }
+                pax_sizes.clear();
+            }
+        }
+    }
+    file.rewind()?;
+    let mut tar = tar::Archive::new(file);
     let mut staging =
         tempfile::NamedTempFile::new_in(destination.parent().context("Missing artifact parent")?)?;
     let mut hash = Sha256::new();
     let mut size_bytes = 0;
     let mut found = false;
-    for entry in tar.entries()?.raw(true) {
+    // Apply bounded PAX/GNU metadata before validating the effective path and type.
+    for entry in tar.entries()? {
         let mut entry = entry?;
         if found
             || entry.path()?.as_ref() != Path::new("application.flatpak")
@@ -540,6 +589,123 @@ impl BuildExecutor for DockerExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn metadata_archive(
+        dir: &Path,
+        kind: tar::EntryType,
+        payload: &[u8],
+        file_kind: tar::EntryType,
+    ) -> PathBuf {
+        let path = dir.join("metadata.tar");
+        let mut archive = tar::Builder::new(std::fs::File::create(&path).unwrap());
+        let mut metadata = tar::Header::new_gnu();
+        metadata.set_entry_type(kind);
+        metadata.set_size(payload.len() as u64);
+        metadata.set_mode(0o644);
+        metadata.set_cksum();
+        archive
+            .append_data(&mut metadata, "././@LongLink", payload)
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(file_kind);
+        header.set_size(5);
+        header.set_mode(0o644);
+        if file_kind.is_symlink() {
+            header.set_link_name("/etc/passwd").unwrap();
+        }
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "application.flatpak", &b"hello"[..])
+            .unwrap();
+        archive.finish().unwrap();
+        path
+    }
+    fn pax(key: &str, value: &str) -> Vec<u8> {
+        let suffix = format!(" {key}={value}\n");
+        let mut length = suffix.len() + 1;
+        loop {
+            let entry = format!("{length}{suffix}");
+            if entry.len() == length {
+                return entry.into_bytes();
+            }
+            length = entry.len();
+        }
+    }
+    #[test]
+    fn accepts_bounded_pax_and_gnu_metadata() {
+        for (kind, payload) in [
+            (tar::EntryType::XHeader, pax("mtime", "123.456")),
+            (tar::EntryType::XHeader, pax("path", "application.flatpak")),
+            (tar::EntryType::XHeader, pax("size", "5")),
+            (
+                tar::EntryType::GNULongName,
+                b"application.flatpak\0".to_vec(),
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let archive = metadata_archive(dir.path(), kind, &payload, tar::EntryType::Regular);
+            let out = dir.path().join("result");
+            let artifact = extract_bundle(
+                &archive,
+                &out,
+                100,
+                "unused".into(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(artifact.size_bytes, 5);
+            assert_eq!(std::fs::read(out).unwrap(), b"hello");
+        }
+    }
+    #[test]
+    fn metadata_cannot_override_safe_path_type_or_size() {
+        for (kind, payload, file_kind) in [
+            (
+                tar::EntryType::XHeader,
+                pax("path", "../../escape"),
+                tar::EntryType::Regular,
+            ),
+            (
+                tar::EntryType::GNULongName,
+                b"/etc/passwd\0".to_vec(),
+                tar::EntryType::Regular,
+            ),
+            (
+                tar::EntryType::XHeader,
+                pax("path", "application.flatpak"),
+                tar::EntryType::Symlink,
+            ),
+            (
+                tar::EntryType::XHeader,
+                pax("size", "1000000000"),
+                tar::EntryType::Regular,
+            ),
+            (
+                tar::EntryType::XHeader,
+                pax("size", "0"),
+                tar::EntryType::Regular,
+            ),
+            (
+                tar::EntryType::GNULongName,
+                vec![b'a'; 65537],
+                tar::EntryType::Regular,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let archive = metadata_archive(dir.path(), kind, &payload, file_kind);
+            let out = dir.path().join("result");
+            assert!(
+                extract_bundle(
+                    &archive,
+                    &out,
+                    100,
+                    "unused".into(),
+                    &CancellationToken::new()
+                )
+                .is_err()
+            );
+            assert!(!out.exists());
+        }
+    }
     fn archive(dir: &Path, name: &str, kind: tar::EntryType) -> PathBuf {
         let file = dir.join("test.tar");
         let mut archive = tar::Builder::new(std::fs::File::create(&file).unwrap());
