@@ -1,4 +1,4 @@
-name: M1 checks
+name: M1 and M2 checks
 on:
   push:
   pull_request:
@@ -21,9 +21,12 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --locked
+      - run: cargo build --workspace --locked
+      - run: docker compose config --quiet
+      - run: python3 -m py_compile scripts/test-publish-install.py infra/docker/bootstrap-repository.py
   worker-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,3 +49,36 @@ jobs:
       # Flatpak requires nested unprivileged user namespaces. This runner is disposable.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test -p librehub-builder --test flatpak -- --ignored --nocapture
+      - name: Install real Flatpak client and OSTree tooling
+        run: sudo apt-get update && sudo apt-get install -y flatpak ostree gnupg
+      - name: Build pinned flat-manager
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/flat-manager.Dockerfile
+          tags: librehub-flat-manager:m2
+          load: true
+          cache-from: type=gha,scope=manager
+          cache-to: type=gha,scope=manager,mode=max
+      - name: Start development signing, flat-manager, PostgreSQL and public repository
+        run: |
+          export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
+          docker compose config --quiet
+          docker compose up -d --no-build
+          timeout 120 sh -c 'until test -f data/dev/publisher.env; do sleep 1; done'
+      - run: cargo build --workspace --locked
+      - name: Real signed publish and Flatpak installation proof
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-publish-install.py
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: signed-flatpak-installation-proof
+          path: data/e2e-proof.json
+      - name: Service diagnostics
+        if: failure()
+        run: docker compose logs --tail 150 flat-manager repository-http postgres repository-bootstrap
+      - name: Remove ephemeral keys and services
+        if: always()
+        run: docker compose down --volumes
