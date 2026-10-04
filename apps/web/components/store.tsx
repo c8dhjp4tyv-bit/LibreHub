@@ -27,8 +27,9 @@ export function Icon({ app }: { app: Card }) {
   );
 }
 export function AppCard({ app }: { app: Card }) {
+  // App-specific image CSP requires a fresh document, not client router navigation.
   return (
-    <Link
+    <a
       className="app-card"
       href={`/apps/${encodeURIComponent(app.app_id)}${app.channel === "beta" ? "?channel=beta" : ""}`}
     >
@@ -43,7 +44,7 @@ export function AppCard({ app }: { app: Card }) {
       </span>
       {app.archived && <span className="badge">Archived</span>}
       {app.channel === "beta" && <span className="badge">Beta</span>}
-    </Link>
+    </a>
   );
 }
 export function Grid({ page }: { page: Page<Card> }) {

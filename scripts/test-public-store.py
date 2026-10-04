@@ -208,7 +208,10 @@ with tempfile.TemporaryDirectory(prefix='librehub-m4-') as temporary:
         with urllib.request.urlopen(WEB + '/apps/' + APP) as response:
             html = response.read().decode()
             assert 'Catalog Hello' in html and source_commit[:12] in html and 'Install with Flatpak' in html
-            assert "frame-ancestors 'none'" in response.headers['Content-Security-Policy']
+            policy = response.headers['Content-Security-Policy']
+            print('Store screenshot policy:', policy, flush=True)
+            assert "frame-ancestors 'none'" in policy
+            assert 'https://raw.githubusercontent.com' in policy
         browser_env = web_env.copy()
         browser_env['LIBREHUB_E2E_APP_ID'] = APP
         subprocess.run(['npm', 'run', 'test:e2e'], cwd=ROOT / 'apps/web', env=browser_env, check=True, timeout=180)

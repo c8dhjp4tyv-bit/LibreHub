@@ -9,6 +9,13 @@ test("discover a real published app and download its signed repository reference
     throw new Error(
       "LIBREHUB_E2E_APP_ID must identify the real published acceptance application",
     );
+  page.on("requestfailed", (request) => {
+    if (request.resourceType() === "image")
+      console.error("Image request failed:", request.url(), request.failure()?.errorText);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") console.error("Browser error:", message.text());
+  });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(
@@ -36,6 +43,7 @@ test("discover a real published app and download its signed repository reference
   expect(download.suggestedFilename()).toBe(`${appId}.flatpakref`);
   await page.keyboard.press("Tab");
   const screenshot = page.getByRole("img", { name: "Acceptance image" });
+  console.log("Screenshot URL:", await screenshot.getAttribute("src"));
   await screenshot.scrollIntoViewIfNeeded();
   await expect
     .poll(

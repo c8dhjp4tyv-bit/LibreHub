@@ -64,6 +64,10 @@ nosniff, no-referrer, frame-ancestors none/X-Frame-Options DENY and restrictive
 permissions policy. CSP allows Next.js's escaped inline hydration and inline
 styles; no developer HTML/script is executed. Remote image optimization/proxy is
 disabled (`unoptimized`) and screenshot origins are selected from indexed DTOs.
+App cards and stable/beta switches use ordinary document navigation: browsers do
+not replace a document's CSP on Next.js client navigation. A fresh app document
+is required to apply that app/channel's validated screenshot origins. The real
+browser acceptance enters from search and checks the external image decodes.
 
 ## Install flow
 

@@ -97,14 +97,14 @@ export default async function AppPage(props: Props) {
         <p className="notice">
           This is a beta preview.{" "}
           {app.current_stable_release && (
-            <Link href={`/apps/${app.app_id}`}>View stable release →</Link>
+            <a href={`/apps/${app.app_id}`}>View stable release →</a>
           )}
         </p>
       )}
       {app.channel === "stable" && app.current_beta_release && (
         <p className="notice">
           A beta preview is also available.{" "}
-          <Link href={`/apps/${app.app_id}?channel=beta`}>View beta →</Link>
+          <a href={`/apps/${app.app_id}?channel=beta`}>View beta →</a>
         </p>
       )}
       {app.archived && (
