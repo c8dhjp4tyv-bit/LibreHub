@@ -1,5 +1,25 @@
 # Provision the worker image. The API runs on the host so no container gets the Docker socket.
 services:
+  web:
+    image: librehub-web:m4
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    # Linux development only. API remains a host supervisor; no Docker socket in containers.
+    network_mode: host
+    environment:
+      HOSTNAME: 127.0.0.1
+      PORT: '3000'
+      LIBREHUB_API_URL: ${LIBREHUB_API_URL:-http://127.0.0.1:8080}
+      LIBREHUB_API_PUBLIC_URL: ${LIBREHUB_API_PUBLIC_URL:-http://localhost:8080}
+      LIBREHUB_WEB_PUBLIC_URL: ${LIBREHUB_WEB_PUBLIC_URL:-http://localhost:3000}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   postgres:
     image: postgres:17.6-bookworm
     environment:

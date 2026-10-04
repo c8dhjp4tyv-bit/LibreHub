@@ -1,3 +1,4 @@
+# Default deny: workers/publisher images receive only their existing trusted build inputs.
 **
 !infra/
 !infra/docker/
@@ -5,3 +6,13 @@
 !infra/docker/librehub-build
 !infra/docker/flat-manager.Dockerfile
 !infra/docker/bootstrap-repository.py
+!infra/docker/web.Dockerfile
+!apps/
+!apps/web/
+!apps/web/**
+apps/web/node_modules
+apps/web/.next
+apps/web/test-results
+apps/web/playwright-report
+apps/web/.env*
+apps/web/*.tsbuildinfo

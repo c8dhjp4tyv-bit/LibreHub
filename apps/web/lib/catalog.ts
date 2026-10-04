@@ -1,0 +1,143 @@
+import { cache } from "react";
+export type Channel = "stable" | "beta";
+export interface Publisher {
+  id: string | null;
+  display_name: string;
+}
+export interface Card {
+  app_id: string;
+  slug: string;
+  name: string;
+  summary: string;
+  icon: string | null;
+  publisher: Publisher;
+  project_id: string | null;
+  source_url: string | null;
+  categories: string[];
+  architectures: string[];
+  channel: Channel;
+  archived: boolean;
+  updated_at: string;
+  published_at: string;
+}
+export interface Permissions {
+  network: boolean;
+  filesystem: string[];
+  devices: string[];
+  sockets: string[];
+  dbus: string[];
+  shared: string[];
+  other: string[];
+}
+export interface Release {
+  publication_id: string;
+  build_id: string;
+  source_commit: string | null;
+  source_url: string | null;
+  channel: Channel;
+  architecture: string;
+  flatpak_ref: string;
+  ostree_checksum: string;
+  published_at: string;
+  version: string;
+  release_notes: string;
+  permissions: Permissions;
+}
+export interface App extends Card {
+  description: string;
+  screenshots: { url: string; caption: string }[];
+  homepage: string | null;
+  license: string | null;
+  developer_name: string | null;
+  content_rating: string[];
+  current_stable_release: Release | null;
+  current_beta_release: Release | null;
+  current_releases: Release[];
+  install: {
+    remote: string;
+    remote_descriptor_url: string;
+    flatpakref_url: string;
+    command: string;
+  };
+}
+export interface Page<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+export interface Category {
+  id: string;
+  count: number;
+}
+export const apiBase = process.env.LIBREHUB_API_URL || "http://127.0.0.1:8080";
+export const publicApiBase =
+  process.env.LIBREHUB_API_PUBLIC_URL || "http://localhost:8080";
+export const webBase =
+  process.env.LIBREHUB_WEB_PUBLIC_URL || "http://localhost:3000";
+for (const base of [apiBase, publicApiBase, webBase]) {
+  const u = new URL(base);
+  if (
+    !["http:", "https:"].includes(u.protocol) ||
+    u.username ||
+    u.password ||
+    u.search ||
+    u.hash
+  )
+    throw new Error("Invalid operator URL configuration");
+}
+export class CatalogUnavailable extends Error {}
+export const getCatalog = cache(async <T>(path: string): Promise<T | null> => {
+  // Paths are constructed by our route code, never supplied as arbitrary URLs.
+  if (!path.startsWith("/api/v1/catalog/"))
+    throw new Error("Invalid catalog route");
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
+      next: { revalidate: 5 },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    throw new CatalogUnavailable("The catalog is temporarily unavailable.");
+  }
+  if (response.status === 404) return null;
+  if (!response.ok)
+    throw new CatalogUnavailable("The catalog could not load this request.");
+  return (await response.json()) as T;
+});
+export function listPath(
+  params: Record<string, string | undefined>,
+  search = false,
+): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
+  return `/api/v1/catalog/${search ? "search" : "apps"}?${q}`;
+}
+export function date(value: string): string {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(new Date(value));
+}
+export function commitLink(
+  source: string | null,
+  commit: string | null,
+): string | null {
+  if (!source || !commit || !/^[0-9a-f]{40}$/.test(commit)) return null;
+  try {
+    const u = new URL(source);
+    if (
+      u.protocol !== "https:" ||
+      u.username ||
+      u.password ||
+      u.search ||
+      u.hash ||
+      u.hostname !== "github.com" ||
+      !/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(u.pathname)
+    )
+      return null;
+    return `${u.origin}${u.pathname.replace(/\/$/, "").replace(/\.git$/, "")}/commit/${commit}`;
+  } catch {
+    return null;
+  }
+}
