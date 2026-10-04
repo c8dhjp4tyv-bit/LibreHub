@@ -9,6 +9,7 @@ librehub-builder.workspace = true
 librehub-publisher.workspace = true
 librehub-source.workspace = true
 librehub-catalog.workspace = true
+librehub-security.workspace = true
 base64 = "0.22"
 url = "2"
 sha2 = "0.10"

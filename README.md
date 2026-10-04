@@ -9,6 +9,10 @@ OSTree repositories, and installation with standard Flatpak clients.
 immutable source snapshots, signed webhooks and optional automatic publication.
 **M4 — Public Store & Catalog** adds a publication-derived AppStream catalog, FTS5
 search, a real web store and signed per-app Flatpak references.
+**M5 — Trust, Security & Moderation** adds verified publisher domain ownership,
+cryptographically tied SPDX 2.3 JSON SBOM generation, release-to-release Flatpak
+permission diffing, OSV-compatible vulnerability scanning, catalog visibility
+gating, abuse reporting, and store trust badges.
 
 ## Developer workflow
 
@@ -297,20 +301,22 @@ python3 scripts/test-developer-platform.py
 # Stop Compose web so the acceptance can start its own production server:
 docker compose stop web
 python3 scripts/test-public-store.py
+python3 scripts/test-trust-security.py
 ```
 
-The resulting `data/e2e-proof.json` is also uploaded as a CI artifact.
+The resulting `data/e2e-proof.json`, `data/m3-proof.json`, `data/m4-proof.json`, and `data/m5-proof.json` are uploaded as CI artifacts.
 On hosts with AppArmor restrictions, nested user namespaces may be denied; see
 [security.md](docs/security.md) rather than adding privileged mode.
 
 Code: `services/source` (HTTPS Git, manifests and source snapshots), `crates/common` (domain types), `services/validator` (policy and parsing),
 `services/builder` (executor boundary and Docker implementation), `services/api`
 (HTTP, SQLite repository and supervisors), `services/publisher` (artifact validation,
-flat-manager client and signed public repository verification). See [architecture.md](docs/architecture.md)
-and [build-pipeline.md](docs/build-pipeline.md) for lifecycle and recovery details.
-`services/catalog` owns bounded extraction/public models, the API owns durable
-catalog indexing/storage/search, and `apps/web` is the real Next.js store.
+flat-manager client and signed public repository verification), `services/catalog` (AppStream extraction and catalog models),
+`services/security` (SPDX SBOM generator, permission diffing, DNS verification, and vulnerability scanning),
+and `apps/web` (Next.js public store). See [architecture.md](docs/architecture.md), [trust.md](docs/trust.md),
+[sbom.md](docs/sbom.md), [vulnerability-analysis.md](docs/vulnerability-analysis.md), [moderation.md](docs/moderation.md),
+and [m5-verification.md](docs/m5-verification.md).
 
 M1 keeps its bounded bundle artifact guarantees. M2 reconstructs a private OSTree
 repository from a verified bundle using `flatpak build-import-bundle`; flat-manager
-manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Moderation, hardened multi-tenant isolation and other package formats remain deferred.
+manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Catalog indexing and store in M4. Trust, verification, SBOMs, permission diffing, and moderation are implemented in M5. Hardened multi-tenant isolation and other package formats remain deferred.

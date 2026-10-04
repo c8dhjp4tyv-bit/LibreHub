@@ -5,7 +5,9 @@ import {
   type Card,
   type Page,
   type Permissions,
+  type PermissionDiff,
   type Release,
+  type TrustSummary,
   date,
   commitLink,
 } from "../lib/catalog";
@@ -42,6 +44,7 @@ export function AppCard({ app }: { app: Card }) {
       <span className="card-arrow" aria-hidden="true">
         ↗
       </span>
+      {app.trust && <TrustBadge trust={app.trust} />}
       {app.archived && <span className="badge">Archived</span>}
       {app.channel === "beta" && <span className="badge">Beta</span>}
     </a>
@@ -253,3 +256,238 @@ export function ReleaseHistory({ page }: { page: Page<Release> }) {
     </div>
   );
 }
+
+export function TrustBadge({ trust }: { trust?: TrustSummary }) {
+  if (!trust) return null;
+  if (trust.moderation_state === "restricted") {
+    return <span className="badge badge-restricted">Restricted</span>;
+  }
+  if (trust.moderation_state === "under_review") {
+    return <span className="badge badge-warning">Under Review</span>;
+  }
+  if (trust.state === "verified_publisher") {
+    return (
+      <span
+        className="badge badge-verified"
+        title="Publisher domain ownership is verified. This does not imply an endorsement or guarantee of complete safety."
+      >
+        ✓ Verified Publisher{trust.verified_domain ? ` (${trust.verified_domain})` : ""}
+      </span>
+    );
+  }
+  return <span className="badge">{trust.badge_label || "Community"}</span>;
+}
+
+export function PermissionDiffNotice({ diff }: { diff?: PermissionDiff | null }) {
+  if (!diff || diff.severity === "none") return null;
+
+  return (
+    <div className={`permission-diff-banner diff-${diff.severity}`}>
+      <div className="diff-header">
+        <h4>
+          Permission changes in this release{" "}
+          <span className={`badge badge-${diff.severity}`}>
+            {diff.severity.toUpperCase()} IMPACT
+          </span>
+        </h4>
+        <span className="muted">{date(diff.generated_at)}</span>
+      </div>
+
+      {diff.network_changed && (
+        <p>
+          <strong>Network access:</strong>{" "}
+          {diff.network_changed.to ? "Enabled (previously disabled)" : "Disabled (previously enabled)"}
+        </p>
+      )}
+
+      {diff.added.filesystem.length > 0 && (
+        <div>
+          <strong>Added filesystem access:</strong>
+          <ul>
+            {diff.added.filesystem.map((f) => (
+              <li key={f}>
+                <code>{f}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diff.added.devices.length > 0 && (
+        <div>
+          <strong>Added device access:</strong>
+          <ul>
+            {diff.added.devices.map((d) => (
+              <li key={d}>
+                <code>{d}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diff.added.sockets.length > 0 && (
+        <div>
+          <strong>Added socket access:</strong>
+          <ul>
+            {diff.added.sockets.map((s) => (
+              <li key={s}>
+                <code>{s}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diff.added.dbus.length > 0 && (
+        <div>
+          <strong>Added D-Bus access:</strong>
+          <ul>
+            {diff.added.dbus.map((b) => (
+              <li key={b}>
+                <code>{b}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diff.removed.filesystem.length > 0 && (
+        <div>
+          <strong>Removed filesystem access:</strong>
+          <ul>
+            {diff.removed.filesystem.map((f) => (
+              <li key={f}>
+                <del><code>{f}</code></del>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diff.notes && diff.notes.length > 0 && (
+        <ul className="diff-notes">
+          {diff.notes.map((note, i) => (
+            <li key={i}>{note}</li>
+          ))}
+        </ul>
+      )}
+
+      <p className="muted">
+        LibreHub tracks permission snapshots across releases so security changes are transparent and auditable.
+      </p>
+    </div>
+  );
+}
+
+export function SecurityDetailsSection({
+  release,
+  trust,
+}: {
+  release: Release;
+  trust?: TrustSummary;
+}) {
+  const security = release.security;
+
+  return (
+    <section className="security-section">
+      <h2>Trust & Security Analysis</h2>
+
+      {/* Moderation Warning if applicable */}
+      {trust && (trust.moderation_state === "under_review" || trust.moderation_state === "restricted") && (
+        <div className={`notice notice-${trust.moderation_state}`}>
+          <strong>
+            {trust.moderation_state === "restricted"
+              ? "Catalog Notice: Restricted Visibility"
+              : "Catalog Notice: Under Operator Review"}
+          </strong>
+          <p>{trust.moderation_notice || "This application is undergoing platform moderation review."}</p>
+        </div>
+      )}
+
+      {/* Permission Diff */}
+      {security?.permission_diff && (
+        <PermissionDiffNotice diff={security.permission_diff} />
+      )}
+
+      {/* Vulnerability Scanning */}
+      <div className="security-card">
+        <h3>Vulnerability Assessment</h3>
+        {!security || security.vulnerabilities_status === "pending" ? (
+          <p className="muted">Security analysis is currently queued or in progress for this release.</p>
+        ) : security.vulnerabilities_status === "unavailable" ? (
+          <div className="status-unavailable">
+            <p><strong>Analysis temporarily unavailable</strong></p>
+            <p className="muted">
+              Vulnerability feed query could not be completed at this time. This does not indicate the application is verified safe.
+            </p>
+          </div>
+        ) : security.vulnerabilities_status === "clean" ? (
+          <div className="status-clean">
+            <p><strong>✓ No known vulnerabilities matched in database</strong></p>
+            <p className="muted">
+              Scanned against the open OSV database at {security.vulnerabilities_checked_at ? date(security.vulnerabilities_checked_at) : "build time"}.
+              Absence of known CVEs does not constitute a formal code audit or complete safety guarantee.
+            </p>
+          </div>
+        ) : (
+          <div className="status-vulnerable">
+            <p>
+              <strong>⚠️ {security.vulnerability_counts.total} known vulnerability finding(s) detected</strong>
+              {security.vulnerability_counts.critical > 0 && (
+                <span className="badge badge-critical"> {security.vulnerability_counts.critical} Critical</span>
+              )}
+              {security.vulnerability_counts.high > 0 && (
+                <span className="badge badge-high"> {security.vulnerability_counts.high} High</span>
+              )}
+            </p>
+            <div className="findings-list">
+              {security.findings.map((f) => (
+                <article key={`${f.vulnerability_id}-${f.component_name}`} className="finding-item">
+                  <div className="finding-header">
+                    <strong>{f.component_name} @ {f.component_version}</strong>
+                    <span className={`badge badge-${f.severity}`}>{f.severity.toUpperCase()}</span>
+                  </div>
+                  <p className="finding-id">
+                    {f.reference_url ? (
+                      <a href={f.reference_url} target="_blank" rel="noopener noreferrer">
+                        {f.vulnerability_id} ↗
+                      </a>
+                    ) : (
+                      <code>{f.vulnerability_id}</code>
+                    )}
+                  </p>
+                  {f.summary && <p className="finding-summary">{f.summary}</p>}
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* SBOM Artifact */}
+      {security && security.sbom_download_url && (
+        <div className="security-card sbom-card">
+          <h3>Software Bill of Materials (SBOM)</h3>
+          <p>
+            A standardized <strong>SPDX 2.3 JSON</strong> SBOM was generated from the signed build artifact.
+          </p>
+          <dl className="sbom-meta">
+            <dt>Components inventory</dt>
+            <dd>{security.sbom_component_count} package(s)</dd>
+            <dt>SHA-256 Digest</dt>
+            <dd><code className="checksum">{security.sbom_sha256}</code></dd>
+          </dl>
+          <a
+            className="download-link-button"
+            href={`${publicApiBase}${security.sbom_download_url}`}
+            download={`sbom-${release.flatpak_ref.replace(/\//g, "-")}.spdx.json`}
+          >
+            Download SBOM (SPDX 2.3 JSON) ↓
+          </a>
+        </div>
+      )}
+    </section>
+  );
+}
+

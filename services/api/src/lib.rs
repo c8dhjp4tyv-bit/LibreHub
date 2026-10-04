@@ -14,3 +14,7 @@ pub mod source_worker;
 pub mod catalog_http;
 pub mod catalog_store;
 pub mod catalog_worker;
+
+pub mod security_http;
+pub mod security_store;
+pub mod security_worker;

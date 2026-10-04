@@ -9,6 +9,8 @@ mod developer;
 pub use developer::*;
 mod publication;
 pub use publication::*;
+mod security;
+pub use security::*;
 
 pub type Timestamp = DateTime<Utc>;
 

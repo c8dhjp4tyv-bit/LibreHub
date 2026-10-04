@@ -1,4 +1,4 @@
-name: M1, M2, M3 and M4 checks
+name: M1, M2, M3, M4 and M5 checks
 on:
   push:
   pull_request:
@@ -23,7 +23,7 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
       - run: docker compose config --quiet
-      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
+      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/test-trust-security.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
   web:
     runs-on: ubuntu-24.04
     steps:
@@ -122,6 +122,15 @@ jobs:
           path: |
             data/m4-proof.json
             data/m4-store-mobile.png
+      - name: Real trust, security, SBOM, permission diffs, domain verification and moderation proof
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-trust-security.py
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: trust-security-moderation-proof
+          path: data/m5-proof.json
       - name: Service diagnostics
         if: failure()
         run: docker compose logs --tail 150 flat-manager repository-http postgres repository-bootstrap

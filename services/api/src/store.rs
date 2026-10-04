@@ -78,6 +78,7 @@ impl Store {
         db.execute_batch(include_str!("../migrations/002_publications.sql"))?;
         db.execute_batch(include_str!("../migrations/003_developer_platform.sql"))?;
         db.execute_batch(include_str!("../migrations/004_catalog.sql"))?;
+        db.execute_batch(include_str!("../migrations/005_trust_security.sql"))?;
         // Existing M3 databases predate the explicit automatic-publication association.
         let has_auto_publish_id = db
             .prepare("PRAGMA table_info(source_events)")?

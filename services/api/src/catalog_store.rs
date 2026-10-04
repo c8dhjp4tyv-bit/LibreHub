@@ -67,7 +67,7 @@ impl Store {
                 build.provenance.as_ref().and_then(|b| b.revision.source_ref.strip_prefix("refs/tags/").map(|s|librehub_catalog::metadata::bounded_text(s,120)))
                 .or_else(||source_commit.as_ref().map(|s| s[..12].into())).unwrap_or_else(||p.updated_at.format("%Y-%m-%d").to_string())
             });
-            let release = PublicRelease { publication_id:p.id.to_string(), build_id:p.build_id.to_string(), source_commit, source_url:source_url.clone(), channel:p.channel, architecture:p.architecture, flatpak_ref:result.published_ref.ref_name.to_string(), ostree_checksum:result.published_ref.commit.clone(), published_at:p.updated_at, version, release_notes:extracted.metadata.release_notes.clone(), permissions:extracted.permissions };
+            let release = PublicRelease { publication_id:p.id.to_string(), build_id:p.build_id.to_string(), source_commit, source_url:source_url.clone(), channel:p.channel, architecture:p.architecture, flatpak_ref:result.published_ref.ref_name.to_string(), ostree_checksum:result.published_ref.commit.clone(), published_at:p.updated_at, version, release_notes:extracted.metadata.release_notes.clone(), permissions:extracted.permissions, security: None };
             tx.execute("INSERT INTO
                  catalog_releases(publication_id,app_id,build_id,channel,architecture,published_at,checksum,record)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(publication_id) DO UPDATE SET record=excluded.record",params![release.publication_id,p.app_id,release.build_id,p.channel.to_string(),p.architecture.to_string(),p.updated_at.to_rfc3339(),release.ostree_checksum,serde_json::to_string(&release)?])?;
@@ -75,7 +75,7 @@ impl Store {
             let order = (p.updated_at.to_rfc3339(),p.id.to_string());
             if old.as_ref().is_none_or(|old|order >= *old) {
                 let published_at: String = tx.query_row("SELECT min(published_at) FROM catalog_releases WHERE app_id=?1 AND channel=?2",params![p.app_id,p.channel.to_string()],|r|r.get(0))?;
-                let entry = Entry { card:PublicCatalogCard { app_id:p.app_id.clone(), slug:p.app_id.clone(), name:extracted.metadata.name.clone(), summary:extracted.metadata.summary.clone(), icon:extracted.metadata.icon_url.clone(), publisher:PublicPublisher{id:owner.clone(),display_name},project_id:project_id.clone(),source_url,categories:extracted.metadata.categories.clone(),architectures:vec![],channel:p.channel,archived:false,updated_at:p.updated_at,published_at:published_at.parse()? },metadata:extracted.metadata };
+                let entry = Entry { card:PublicCatalogCard { app_id:p.app_id.clone(), slug:p.app_id.clone(), name:extracted.metadata.name.clone(), summary:extracted.metadata.summary.clone(), icon:extracted.metadata.icon_url.clone(), publisher:PublicPublisher{id:owner.clone(),display_name},project_id:project_id.clone(),source_url,categories:extracted.metadata.categories.clone(),architectures:vec![],channel:p.channel,archived:false,trust:None,updated_at:p.updated_at,published_at:published_at.parse()? },metadata:extracted.metadata };
                 tx.execute("INSERT INTO
                  catalog_apps(app_id,channel,name,publisher_id,project_id,published_at,updated_at,latest_publication,record,icon_png)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(app_id,channel) DO UPDATE SET
@@ -86,6 +86,7 @@ impl Store {
                 index(&tx,row,&entry)?;
             }
             tx.execute("UPDATE catalog_jobs SET state='ready',error_code=NULL,updated_at=?2 WHERE publication_id=?1",params![p.id.to_string(),chrono::Utc::now().to_rfc3339()])?;
+            tx.execute("INSERT OR IGNORE INTO security_jobs(publication_id, state, attempts, updated_at) VALUES(?1, 'pending', 0, ?2)", params![p.id.to_string(), chrono::Utc::now().to_rfc3339()])?;
             tx.commit()?; Ok(())
         }).await
     }
@@ -167,6 +168,240 @@ fn index(db: &Connection, row: i64, entry: &Entry) -> anyhow::Result<()> {
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![row,entry.card.app_id,entry.metadata.name,entry.metadata.summary,entry.metadata.description,entry.card.publisher.display_name,entry.metadata.keywords.join(" "),entry.metadata.categories.join(" "),entry.card.channel.to_string()])?;
     Ok(())
 }
+fn get_app_trust_sync(
+    db: &Connection,
+    app_id: &str,
+    publisher_id: Option<&str>,
+    latest_pub_id: Option<&str>,
+) -> anyhow::Result<TrustSummary> {
+    let mod_row: Option<(String, Option<String>)> = db
+        .query_row(
+            "SELECT state, public_note FROM catalog_moderation WHERE app_id=?1",
+            [app_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+
+    let (mod_state, mod_notice) = match mod_row {
+        Some((s, note)) => (
+            s.parse::<ModerationState>()
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            note,
+        ),
+        None => (ModerationState::Normal, None),
+    };
+
+    let mut publisher_verified = false;
+    let mut verified_domain = None;
+    if let Some(pub_id) = publisher_id {
+        let ver_row: Option<String> = db
+            .query_row(
+                "SELECT domain FROM publisher_verifications WHERE developer_id=?1 AND status='verified' ORDER BY verified_at DESC LIMIT 1",
+                [pub_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(d) = ver_row {
+            publisher_verified = true;
+            verified_domain = Some(d);
+        }
+    }
+
+    let trust_state = if mod_state == ModerationState::Removed {
+        TrustState::Removed
+    } else if mod_state == ModerationState::Restricted {
+        TrustState::Restricted
+    } else if publisher_verified {
+        TrustState::VerifiedPublisher
+    } else {
+        TrustState::Unverified
+    };
+
+    let mut counts = VulnerabilityCounts::default();
+    let mut latest_perm_sev = PermissionSeverity::None;
+    let mut sec_analysis = "pending".to_string();
+
+    if let Some(pub_id) = latest_pub_id {
+        let sec_row: Option<(String, String)> = db
+            .query_row(
+                "SELECT status, permission_severity FROM release_security WHERE publication_id=?1",
+                [pub_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        if let Some((status_str, perm_sev_str)) = sec_row {
+            sec_analysis = status_str;
+            if let Ok(sev) = perm_sev_str.parse::<PermissionSeverity>() {
+                latest_perm_sev = sev;
+            }
+            let mut vuln_stmt =
+                db.prepare("SELECT severity FROM vulnerability_findings WHERE publication_id=?1")?;
+            let vuln_rows = vuln_stmt.query_map([pub_id], |r| r.get::<_, String>(0))?;
+            for v_sev in vuln_rows {
+                let sev_str = v_sev?;
+                if let Ok(sev) = sev_str.parse::<VulnerabilitySeverity>() {
+                    match sev {
+                        VulnerabilitySeverity::Critical => counts.critical += 1,
+                        VulnerabilitySeverity::High => counts.high += 1,
+                        VulnerabilitySeverity::Medium => counts.medium += 1,
+                        VulnerabilitySeverity::Low => counts.low += 1,
+                        VulnerabilitySeverity::Unknown => counts.unknown += 1,
+                    }
+                }
+            }
+        }
+    }
+
+    let publisher_str = if publisher_verified {
+        format!(
+            "Verified domain: {}",
+            verified_domain.as_deref().unwrap_or("")
+        )
+    } else {
+        "Unverified publisher".to_string()
+    };
+
+    Ok(TrustSummary {
+        trust_state,
+        publisher_verification: publisher_str,
+        verified_domain,
+        source_available: true,
+        signed_repository: true,
+        security_analysis: sec_analysis,
+        known_vulnerabilities: counts,
+        latest_permission_change: latest_perm_sev,
+        moderation_state: mod_state,
+        moderation_notice: mod_notice,
+    })
+}
+
+fn get_release_security_sync(
+    db: &Connection,
+    pub_id: &str,
+) -> anyhow::Result<Option<ReleaseSecurityDetails>> {
+    let row = db
+        .query_row(
+            "SELECT r.app_id, r.channel, r.status, r.sbom_format, r.sbom_path, r.sbom_component_count, r.sbom_sha256,
+                    r.vulnerabilities_status, r.vulnerabilities_checked_at, r.permissions_extracted_at,
+                    d.diff_json
+             FROM release_security r
+             LEFT JOIN permission_diffs d ON d.to_publication_id = r.publication_id
+             WHERE r.publication_id=?1",
+            [pub_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, u32>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                    r.get::<_, String>(9)?,
+                    r.get::<_, Option<String>>(10)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((
+        app_id,
+        channel,
+        status_str,
+        sbom_format,
+        sbom_path,
+        sbom_component_count,
+        sbom_sha256,
+        vuln_status_str,
+        vuln_checked_at,
+        perm_extracted_at,
+        diff_json,
+    )) = row
+    else {
+        return Ok(None);
+    };
+
+    let mut vuln_stmt = db.prepare(
+        "SELECT vulnerability_id, component_name, component_version, severity, summary, reference_url, source_provider, checked_at
+         FROM vulnerability_findings WHERE publication_id=?1",
+    )?;
+    let findings_rows = vuln_stmt
+        .query_map([pub_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut findings = Vec::new();
+    for (v_id, c_name, c_ver, sev_str, summary, ref_url, src, chk) in findings_rows {
+        findings.push(VulnerabilityFinding {
+            vulnerability_id: v_id,
+            component_name: c_name,
+            component_version: c_ver,
+            severity: sev_str.parse().map_err(|e| anyhow::anyhow!("{e}"))?,
+            summary,
+            reference_url: ref_url,
+            source_provider: src,
+            checked_at: chk.parse()?,
+        });
+    }
+
+    let diff: Option<PermissionDiff> = if let Some(raw) = diff_json {
+        Some(serde_json::from_str(&raw)?)
+    } else {
+        None
+    };
+
+    let perm_sev = diff
+        .as_ref()
+        .map(|d| d.severity)
+        .unwrap_or(PermissionSeverity::None);
+    let counts = VulnerabilityCounts::from_findings(&findings);
+    let perm_extracted: Timestamp = perm_extracted_at.parse()?;
+    let vuln_checked: Option<Timestamp> = vuln_checked_at.map(|s| s.parse()).transpose()?;
+
+    Ok(Some(ReleaseSecurityDetails {
+        publication_id: pub_id.parse()?,
+        app_id: app_id.clone(),
+        channel,
+        status: status_str.parse().map_err(|e| anyhow::anyhow!("{e}"))?,
+        sbom_format,
+        sbom_component_count,
+        sbom_sha256,
+        sbom_download_url: format!("/api/v1/catalog/apps/{app_id}/releases/{pub_id}/sbom/download"),
+        sbom_path: if sbom_path.is_empty() {
+            None
+        } else {
+            Some(sbom_path)
+        },
+        vulnerabilities_status: vuln_status_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        vulnerabilities_checked_at: vuln_checked,
+        vulnerability_counts: counts,
+        findings,
+        permissions_extracted_at: perm_extracted,
+        permission_severity: perm_sev,
+        permission_diff: diff,
+        timestamps: SecurityTimestamps {
+            sbom_generated_at: perm_extracted,
+            vulnerabilities_checked_at: vuln_checked,
+            permissions_extracted_at: perm_extracted,
+        },
+    }))
+}
+
 fn card(
     db: &Connection,
     raw: &str,
@@ -190,9 +425,23 @@ fn card(
             entry.card.app_id, entry.card.channel
         ));
     }
+    let latest_pub: Option<String> = db
+        .query_row(
+            "SELECT latest_publication FROM catalog_apps WHERE app_id=?1 AND channel=?2",
+            params![entry.card.app_id, entry.card.channel.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    entry.card.trust = get_app_trust_sync(
+        db,
+        &entry.card.app_id,
+        entry.card.publisher.id.as_deref(),
+        latest_pub.as_deref(),
+    )
+    .ok();
     Ok(entry.card)
 }
-const FROM: &str = "catalog_apps a LEFT JOIN projects p ON p.id=a.project_id LEFT JOIN developers d ON d.id=a.publisher_id";
+const FROM: &str = "catalog_apps a LEFT JOIN projects p ON p.id=a.project_id LEFT JOIN developers d ON d.id=a.publisher_id LEFT JOIN catalog_moderation m ON m.app_id=a.app_id";
 const ARCHIVED: &str =
     "(coalesce(p.status,'active')!='active' OR coalesce(d.status,'active')!='active')";
 #[async_trait::async_trait]
@@ -205,7 +454,7 @@ impl CatalogStorage for Store {
         );
         self.run(move |db| {
             let from = if expression.is_empty() { FROM.to_owned() } else { format!("{FROM} JOIN catalog_search ON catalog_search.rowid=a.id") };
-            let filter = "a.channel=?1 AND (?2 IS NULL OR EXISTS(SELECT 1 FROM catalog_categories c WHERE c.app_row=a.id AND c.category=?2)) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM catalog_releases r WHERE r.app_id=a.app_id AND r.channel=a.channel AND r.architecture=?3)) AND (?4 IS NULL OR a.publisher_id=?4)";
+            let filter = "a.channel=?1 AND coalesce(m.state,'normal') NOT IN ('restricted','removed') AND (?2 IS NULL OR EXISTS(SELECT 1 FROM catalog_categories c WHERE c.app_row=a.id AND c.category=?2)) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM catalog_releases r WHERE r.app_id=a.app_id AND r.channel=a.channel AND r.architecture=?3)) AND (?4 IS NULL OR a.publisher_id=?4)";
             let filter = if expression.is_empty(){filter.into()}else{format!("{filter} AND catalog_search MATCH ?5")};
             let order = if !expression.is_empty(){"CASE WHEN lower(a.app_id)=lower(?6) THEN 0 WHEN lower(a.name)=lower(?6) THEN 1 WHEN substr(lower(a.name),1,length(?6))=lower(?6) THEN 2 ELSE 3 END, bm25(catalog_search,12.0,10.0,6.0,1.0,3.0,4.0,4.0), a.app_id"}else{match query.sort{CatalogSort::Name=>"lower(a.name),a.app_id",CatalogSort::RecentlyPublished=>"a.published_at DESC,a.app_id",CatalogSort::RecentlyUpdated=>"a.updated_at DESC,a.app_id"}};
             let values: Vec<rusqlite::types::Value> = vec![query.channel.to_string().into(),query.category.map(Into::into).unwrap_or(rusqlite::types::Value::Null),query.architecture.map(|a|a.to_string().into()).unwrap_or(rusqlite::types::Value::Null),query.publisher.map(Into::into).unwrap_or(rusqlite::types::Value::Null)];
@@ -226,13 +475,27 @@ impl CatalogStorage for Store {
         channel: RepositoryChannel,
     ) -> anyhow::Result<Option<PublicCatalogApp>> {
         self.run(move |db| {
+            let mod_state: Option<String> = db.query_row(
+                "SELECT state FROM catalog_moderation WHERE app_id=?1",
+                [&id],
+                |r| r.get(0),
+            ).optional()?;
+            if mod_state.as_deref() == Some("removed") {
+                return Ok(None);
+            }
             let raw:Option<(String,bool,bool)>=db.query_row(&format!("SELECT a.record,a.icon_png IS NOT NULL,{ARCHIVED} FROM {FROM} WHERE a.app_id=?1 AND a.channel=?2"),params![id,channel.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             let Some((raw,icon,archived))=raw else{return Ok(None);};
             let entry:Entry=serde_json::from_str(&raw)?;let card=card(db,&raw,icon,archived)?;
-            let current=db.prepare("SELECT record FROM (SELECT record,row_number() OVER (PARTITION BY channel,architecture ORDER BY
+            let current_raw=db.prepare("SELECT record FROM (SELECT record,row_number() OVER (PARTITION BY channel,architecture ORDER BY
                  published_at DESC,publication_id DESC) AS position FROM catalog_releases WHERE app_id=?1) WHERE
                  position=1 ORDER BY json_extract(record,'$.published_at') DESC,json_extract(record,'$.publication_id')
-                 DESC")?.query_map([&id],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?.into_iter().map(|r|serde_json::from_str::<PublicRelease>(&r)).collect::<Result<Vec<_>,_>>()?;
+                 DESC")?.query_map([&id],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+            let mut current = Vec::new();
+            for r_str in current_raw {
+                let mut rel = serde_json::from_str::<PublicRelease>(&r_str)?;
+                rel.security = get_release_security_sync(db, &rel.publication_id).ok().flatten();
+                current.push(rel);
+            }
             let current_stable_release=current.iter().find(|r|r.channel==RepositoryChannel::Stable).cloned(); let current_beta_release=current.iter().find(|r|r.channel==RepositoryChannel::Beta).cloned();
             let current_releases=current.into_iter().filter(|r|r.channel==channel).collect::<Vec<_>>();
             let branch=current_releases.first().context("Catalog release missing")?.flatpak_ref.rsplit('/').next().unwrap_or("master").to_owned();
@@ -251,12 +514,23 @@ impl CatalogStorage for Store {
             limit > 0 && limit <= 100 && offset <= 100_000,
             "Pagination bounds"
         );
-        self.run(move |db| {let total=db.query_row("SELECT count(*) FROM catalog_releases WHERE app_id=?1 AND channel=?2",params![id,channel.to_string()],|r|r.get::<_,i64>(0))? as u64;let rows=db.prepare("SELECT record FROM catalog_releases WHERE app_id=?1 AND channel=?2 ORDER BY published_at DESC,publication_id DESC LIMIT
-                 ?3 OFFSET ?4")?.query_map(params![id,channel.to_string(),limit as i64,offset as i64],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;let items=rows.into_iter().map(|r|serde_json::from_str(&r)).collect::<Result<Vec<_>,_>>()?;Ok(CatalogPage{items,total,limit,offset})}).await
+        self.run(move |db| {
+            let total=db.query_row("SELECT count(*) FROM catalog_releases WHERE app_id=?1 AND channel=?2",params![id,channel.to_string()],|r|r.get::<_,i64>(0))? as u64;
+            let rows=db.prepare("SELECT record FROM catalog_releases WHERE app_id=?1 AND channel=?2 ORDER BY published_at DESC,publication_id DESC LIMIT ?3 OFFSET ?4")?
+                .query_map(params![id,channel.to_string(),limit as i64,offset as i64],|r|r.get::<_,String>(0))?
+                .collect::<Result<Vec<_>,_>>()?;
+            let mut items = Vec::new();
+            for r in rows {
+                let mut rel = serde_json::from_str::<PublicRelease>(&r)?;
+                rel.security = get_release_security_sync(db, &rel.publication_id).ok().flatten();
+                items.push(rel);
+            }
+            Ok(CatalogPage{items,total,limit,offset})
+        }).await
     }
     async fn categories(&self) -> anyhow::Result<Vec<CatalogCategory>> {
-        self.run(|db| Ok(db.prepare("SELECT category,count(*) FROM catalog_categories c JOIN catalog_apps a ON a.id=c.app_row WHERE
-                 a.channel='stable' GROUP BY category ORDER BY category")?.query_map([],|r|Ok(CatalogCategory{id:r.get(0)?,count:r.get::<_,i64>(1)? as u64}))?.collect::<Result<Vec<_>,_>>()?)).await
+        self.run(|db| Ok(db.prepare("SELECT category,count(*) FROM catalog_categories c JOIN catalog_apps a ON a.id=c.app_row LEFT JOIN catalog_moderation m ON m.app_id=a.app_id WHERE
+                 a.channel='stable' AND coalesce(m.state,'normal') NOT IN ('restricted','removed') GROUP BY category ORDER BY category")?.query_map([],|r|Ok(CatalogCategory{id:r.get(0)?,count:r.get::<_,i64>(1)? as u64}))?.collect::<Result<Vec<_>,_>>()?)).await
     }
 }
 

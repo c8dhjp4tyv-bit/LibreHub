@@ -23,9 +23,11 @@ async fn main() -> anyhow::Result<()> {
     let executor = Arc::new(DockerExecutor::new(config.builder)?);
     let data_dir = config.data_dir;
     let database_path = config.database_path;
-    let store =
-        tokio::task::spawn_blocking(move || Store::open_at(&data_dir, database_path.as_deref()))
-            .await??;
+    let store_data_dir = data_dir.clone();
+    let store = tokio::task::spawn_blocking(move || {
+        Store::open_at(&store_data_dir, database_path.as_deref())
+    })
+    .await??;
     let supervisor = Supervisor::new(store);
     supervisor
         .recover(executor.as_ref())
@@ -53,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     let catalog_router =
         librehub_api::catalog_http::router(librehub_api::catalog_http::CatalogHttp {
             store: supervisor.store.clone(),
-            api_public_url: catalog_config.api_public_url,
+            api_public_url: catalog_config.api_public_url.clone(),
             repository: publishing.as_ref().map(|p| p.repository.clone()),
             page_size: catalog_config.page_size,
         });
@@ -74,15 +76,42 @@ async fn main() -> anyhow::Result<()> {
             supervisor: supervisor.clone(),
             architecture: Architecture::native(),
         },
-        publishing,
+        publishing.clone(),
         librehub_api::platform::Platform {
             worker: source_worker,
             key,
         },
     );
+    let security_worker = librehub_api::security_worker::SecurityWorker::new(
+        supervisor.store.clone(),
+        publishing.as_ref().map(|p| p.repository.clone()),
+        supervisor.shutdown.clone(),
+    );
+    let security_task = tokio::spawn(security_worker.clone().run());
+    let security_http_state = librehub_api::security_http::SecurityHttp::new(
+        supervisor.store.clone(),
+        data_dir.clone(),
+        catalog_config.api_public_url.clone(),
+    );
+    let sec_public = librehub_api::security_http::public_router(security_http_state.clone());
+    let sec_dev = librehub_api::security_http::developer_router(security_http_state.clone())
+        .route_layer(axum::middleware::from_fn_with_state(
+            supervisor.store.clone(),
+            librehub_api::auth::middleware,
+        ));
+    let sec_admin = librehub_api::security_http::admin_router(security_http_state.clone())
+        .route_layer(axum::middleware::from_fn_with_state(
+            supervisor.store.clone(),
+            librehub_api::auth::middleware,
+        ));
+
     let app = app
         .merge(catalog_router)
-        .layer(axum::Extension(catalog_worker));
+        .merge(sec_public)
+        .merge(sec_dev)
+        .merge(sec_admin)
+        .layer(axum::Extension(catalog_worker))
+        .layer(axum::Extension(security_worker));
     let shutdown = supervisor.shutdown.clone();
     let worker_shutdown = shutdown.clone();
     let worker = tokio::spawn(async move {
@@ -109,6 +138,9 @@ async fn main() -> anyhow::Result<()> {
     worker_result?;
     source_task.await.context("Source worker task failed")??;
     catalog_task.await.context("Catalog worker task failed")??;
+    security_task
+        .await
+        .context("Security worker task failed")??;
     if let Some(task) = publishing_task {
         task.await.context("Publisher task failed")??;
     }
