@@ -10,6 +10,10 @@ async fn main() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from);
     let store = Store::open_at(std::path::Path::new(&data), database.as_deref())?;
     let result = match args.as_slice() {
+        [command, action] if command == "catalog" && action == "rebuild" => {
+            store.catalog_rebuild().await?;
+            serde_json::json!({"catalog":"requeued"})
+        }
         [command, name] if command == "create-developer" => {
             serde_json::to_value(store.create_developer(name.clone()).await?)?
         }
@@ -32,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
             )?
         }
         _ => anyhow::bail!(
-            "Usage: librehub-admin create-developer NAME | create-token DEVELOPER_ID NAME [--operator]. Stop the API before offline bootstrap."
+            "Usage: librehub-admin catalog rebuild | create-developer NAME | create-token DEVELOPER_ID NAME [--operator]. Stop the API before offline bootstrap."
         ),
     };
     println!("{}", serde_json::to_string(&result)?);

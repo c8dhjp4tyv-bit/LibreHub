@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
         publishing.repository.verify_key().await.context("Repository public key must match the configured fingerprint and contain no private keys")?;
     }
     let address = config.bind;
+    let catalog_config = librehub_api::catalog_http::CatalogConfig::from_env()?;
     let executor = Arc::new(DockerExecutor::new(config.builder)?);
     let data_dir = config.data_dir;
     let database_path = config.database_path;
@@ -43,6 +44,19 @@ async fn main() -> anyhow::Result<()> {
             )
         })
         .transpose()?;
+    let catalog_worker = librehub_api::catalog_worker::CatalogWorker::new(
+        supervisor.store.clone(),
+        publishing.as_ref().map(|p| p.repository.clone()),
+        supervisor.shutdown.clone(),
+    );
+    let catalog_task = tokio::spawn(catalog_worker.clone().run());
+    let catalog_router =
+        librehub_api::catalog_http::router(librehub_api::catalog_http::CatalogHttp {
+            store: supervisor.store.clone(),
+            api_public_url: catalog_config.api_public_url,
+            repository: publishing.as_ref().map(|p| p.repository.clone()),
+            page_size: catalog_config.page_size,
+        });
     let publishing_task = publishing
         .clone()
         .map(|service| tokio::spawn(service.run()));
@@ -66,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
             key,
         },
     );
+    let app = app
+        .merge(catalog_router)
+        .layer(axum::Extension(catalog_worker));
     let shutdown = supervisor.shutdown.clone();
     let worker_shutdown = shutdown.clone();
     let worker = tokio::spawn(async move {
@@ -91,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
     result?;
     worker_result?;
     source_task.await.context("Source worker task failed")??;
+    catalog_task.await.context("Catalog worker task failed")??;
     if let Some(task) = publishing_task {
         task.await.context("Publisher task failed")??;
     }

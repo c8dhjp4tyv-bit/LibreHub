@@ -314,6 +314,7 @@ async fn cancel_publication(
     ))
 }
 async fn ready(
+    catalog: Option<Extension<crate::catalog_worker::CatalogWorker>>,
     platform: Option<Extension<Arc<crate::platform::Platform>>>,
     State(state): State<Arc<ApiState>>,
     Extension(publishing): Extension<Option<Publishing>>,
@@ -340,8 +341,14 @@ async fn ready(
     } else {
         true
     };
+    let catalog_ready = if let Some(Extension(catalog)) = catalog {
+        catalog.ready().await
+    } else {
+        true
+    };
     let authentication = database;
-    let ready = source
+    let ready = catalog_ready
+        && source
         && authentication
         && database
         && manager
@@ -356,7 +363,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
+            serde_json::json!({"ready":ready,"components":{"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
         ),
     )
 }

@@ -10,3 +10,7 @@ pub mod auth;
 pub mod platform;
 pub mod platform_store;
 pub mod source_worker;
+
+pub mod catalog_http;
+pub mod catalog_store;
+pub mod catalog_worker;
