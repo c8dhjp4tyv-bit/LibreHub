@@ -83,6 +83,7 @@ fn setup(mode: &str, timeout: Duration) -> (tempfile::TempDir, DockerExecutor, B
     )
     .unwrap();
     let job = BuildJob {
+        source_snapshot: None,
         id: BuildId::new(),
         manifest,
         architecture: Architecture::native(),

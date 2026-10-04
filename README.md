@@ -5,14 +5,55 @@ Prototype** accepts standalone JSON/YAML manifests, validates them, queues durab
 jobs, builds in disposable containers, and preserves logs and `.flatpak` bundles.
 **M2 — Repository & Install** adds durable publication through flat-manager, signed
 OSTree repositories, and installation with standard Flatpak clients.
+**M3 — Developer Platform** adds scoped developer tokens, owned Git projects,
+immutable source snapshots, signed webhooks and optional automatic publication.
+
+## Developer workflow
+
+Bootstrap before starting the API (the admin commands use the same data directory):
+
+```bash
+cargo build --workspace --locked
+./target/debug/librehub-admin create-developer "Example Developer"
+./target/debug/librehub-admin create-token <DEVELOPER_ID> "local development"
+export LIBREHUB_TOKEN='<one-time token from the create-token JSON>'
+```
+
+Start the Compose/publisher/API stack below, then register a public Git project:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/projects \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"hello","display_name":"Hello","repository":{"provider":"github","url":"https://github.com/example/hello"},"default_branch":"main","auto_build":true,"build_branches":["main"],"build_tags":true,"auto_publish_channel":"beta"}'
+# Save project.id and the one-time webhook_secret from the response.
+curl -X POST http://localhost:8080/api/v1/projects/<PROJECT_ID>/builds \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"ref":"main"}'
+# Returns reserved build_id + source_event_id. Poll source processing first:
+curl -H "Authorization: Bearer $LIBREHUB_TOKEN" \
+  http://localhost:8080/api/v1/projects/<PROJECT_ID>/source-events/<SOURCE_EVENT_ID>
+curl -H "Authorization: Bearer $LIBREHUB_TOKEN" \
+  http://localhost:8080/api/v1/projects/<PROJECT_ID>/builds
+```
+
+After the source event completes, the existing build/status/log APIs use build_id.
+Set a GitHub push/create webhook to `/api/v1/webhooks/github/<PROJECT_ID>` with the
+returned secret. Signed allowed commits/tags create durable deduplicated events.
+Remove auto_publish_channel (or set null/none) for manual publishing. Public HTTPS
+smart Git is supported; private Git credentials and the public store UI are deferred.
+See [developer-platform.md](docs/developer-platform.md),
+[source-integration.md](docs/source-integration.md), [webhooks.md](docs/webhooks.md)
+and [M3 verification](docs/m3-verification.md).
 
 ## Build, publish, and install
 
 Requirements: Rust stable (edition 2024), a C compiler for bundled SQLite, Linux,
 Python 3, Docker with Compose and daemon access, `flatpak`, `ostree`, `gpg`,
 and support for nested unprivileged user namespaces.
-Use a dedicated development/build host. The API defaults to localhost and has no
-M1 authentication. Read [security.md](docs/security.md) before enabling access.
+Use a dedicated development/build host. The API defaults to localhost; developer,
+build and publishing APIs require bearer tokens. Read [security.md](docs/security.md)
+and [authentication.md](docs/authentication.md) before enabling access.
 
 ```bash
 cargo build --locked
@@ -24,7 +65,7 @@ docker compose up -d --build
 sh scripts/wait-repository-bootstrap.sh
 # After successful bootstrap completion, load public trust and scoped token:
 . data/dev/publisher.env
-cargo run -p librehub-api
+cargo run -p librehub-api --bin librehub-api
 ```
 
 Compose provisions the worker image, PostgreSQL, flat-manager, ephemeral development
@@ -41,11 +82,12 @@ Submit and inspect a build:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/builds \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @examples/org.librehub.Hello.json
 # Returns HTTP 202: {"id":"<BUILD_ID>","status":"queued"}
-curl http://localhost:8080/api/v1/builds/<BUILD_ID>
-curl 'http://localhost:8080/api/v1/builds/<BUILD_ID>/logs?after=0&limit=200'
+curl -H "Authorization: Bearer $LIBREHUB_TOKEN" http://localhost:8080/api/v1/builds/<BUILD_ID>
+curl -H "Authorization: Bearer $LIBREHUB_TOKEN" 'http://localhost:8080/api/v1/builds/<BUILD_ID>/logs?after=0&limit=200'
 ```
 
 YAML also works with `Content-Type: application/yaml` and
@@ -61,9 +103,10 @@ path, size and SHA-256. Find the unsigned bundle at
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/builds/<BUILD_ID>/publish \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" \
   -H 'Content-Type: application/json' -d '{"channel":"stable"}'
 # Returns 202 with a publication ID; poll until status is succeeded:
-curl http://localhost:8080/api/v1/publishes/<PUBLISH_ID>
+curl -H "Authorization: Bearer $LIBREHUB_TOKEN" http://localhost:8080/api/v1/publishes/<PUBLISH_ID>
 flatpak remote-add --user --if-not-exists librehub \
   http://localhost:8090/librehub.flatpakrepo
 flatpak install --user librehub org.librehub.Hello
@@ -175,14 +218,14 @@ The resulting `data/e2e-proof.json` is also uploaded as a CI artifact.
 On hosts with AppArmor restrictions, nested user namespaces may be denied; see
 [security.md](docs/security.md) rather than adding privileged mode.
 
-Code: `crates/common` (domain types), `services/validator` (policy and parsing),
+Code: `services/source` (HTTPS Git, manifests and source snapshots), `crates/common` (domain types), `services/validator` (policy and parsing),
 `services/builder` (executor boundary and Docker implementation), `services/api`
 (HTTP, SQLite repository and supervisors), `services/publisher` (artifact validation,
 flat-manager client and signed public repository verification). See [architecture.md](docs/architecture.md)
 and [build-pipeline.md](docs/build-pipeline.md) for lifecycle and recovery details.
-`apps/web` reserves a future web UI; M1 is operated through the API.
+`apps/web` reserves the M4 store UI; M3 is operated through the authenticated API.
 
 M1 keeps its bounded bundle artifact guarantees. M2 reconstructs a private OSTree
 repository from a verified bundle using `flatpak build-import-bundle`; flat-manager
-manages commit rewriting/signing, publication and summary refresh. Developer accounts,
-moderation, web store, multi-tenant hardening and other package formats remain deferred.
+manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Moderation, web store,
+hardened multi-tenant isolation and other package formats remain deferred.

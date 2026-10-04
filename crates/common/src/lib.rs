@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, str::FromStr};
 use uuid::Uuid;
 
+mod developer;
+pub use developer::*;
 mod publication;
 pub use publication::*;
 
@@ -112,6 +114,7 @@ pub struct Source {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceKind {
+    Dir,
     Archive,
     Git,
     File,
@@ -211,6 +214,8 @@ pub struct BuildRecord {
     pub error: Option<BuildError>,
     pub cancellation_requested: bool,
     pub logs_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<BuildProvenance>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

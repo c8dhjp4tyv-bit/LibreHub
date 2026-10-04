@@ -81,3 +81,18 @@ See [publishing.md](publishing.md) for the complete protocol and recovery rules.
 References: [Flatpak Builder](https://docs.flatpak.org/en/latest/flatpak-builder.html),
 [builder options](https://docs.flatpak.org/en/latest/flatpak-builder-command-reference.html),
 and [single-file bundles](https://docs.flatpak.org/en/latest/single-file-bundles.html).
+
+## Repository-backed M3 inputs
+
+Project trigger admission first creates a persistent source event and reserved M1
+build ID. The source supervisor resolves/persists a full commit SHA, fetches that
+SHA, discovers one valid manifest, rewrites safe local source references and
+prepares a deterministic bounded snapshot. Atomic/fsynced snapshot placement
+precedes a transactional M1 handoff (build + owner/provenance + event completion).
+The existing build queue, cancellation, logs, bundle extraction and restart
+behavior then apply. The worker uses the same validator in its project-source
+context, rehashes/reparses the snapshot, and copies only reconstructed regular
+files into `/work/source`, with the normalized `/work/manifest.json`. There is no
+host checkout mount. Source-stage failures appear in project history. A queued
+build cannot silently use a different snapshot after restart. See
+[source-integration.md](source-integration.md).

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 [dependencies]
 librehub-common.workspace = true
+librehub-source.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

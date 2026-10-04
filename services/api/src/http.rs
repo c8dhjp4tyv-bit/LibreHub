@@ -24,9 +24,9 @@ struct ErrorBody {
     code: &'static str,
     message: String,
 }
-struct ApiError(StatusCode, ErrorBody);
+pub struct ApiError(StatusCode, ErrorBody);
 impl ApiError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self(
             status,
             ErrorBody {
@@ -35,7 +35,7 @@ impl ApiError {
             },
         )
     }
-    fn internal(error: anyhow::Error) -> Self {
+    pub(crate) fn internal(error: anyhow::Error) -> Self {
         tracing::error!(error = %error, "API storage operation failed");
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -43,7 +43,7 @@ impl ApiError {
             "Persistent storage operation failed",
         )
     }
-    fn missing() -> Self {
+    pub(crate) fn missing() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
             "build_not_found",
@@ -120,6 +120,7 @@ fn publication_error(error: anyhow::Error) -> ApiError {
         let (status, code) = match error {
             AdmissionError::Missing => (StatusCode::NOT_FOUND, "build_not_found"),
             AdmissionError::Ineligible => (StatusCode::CONFLICT, "build_not_publishable"),
+            AdmissionError::ApplicationOwned => (StatusCode::CONFLICT, "application_owned"),
             AdmissionError::Full => (StatusCode::SERVICE_UNAVAILABLE, "publish_queue_full"),
             AdmissionError::TooLate => (StatusCode::CONFLICT, "publication_not_cancellable"),
         };
@@ -128,6 +129,7 @@ fn publication_error(error: anyhow::Error) -> ApiError {
     ApiError::internal(error)
 }
 async fn publish_build(
+    auth: Option<Extension<crate::auth::AuthenticatedDeveloper>>,
     State(state): State<Arc<ApiState>>,
     Extension(publishing): Extension<Option<Publishing>>,
     Path(raw): Path<String>,
@@ -193,7 +195,11 @@ async fn publish_build(
             .map_err(ApiError::internal)?;
         publishing
             .publisher
-            .eligible(build, manifest, state.supervisor.store.data_dir.clone())
+            .eligible(
+                build.clone(),
+                manifest,
+                state.supervisor.store.data_dir.clone(),
+            )
             .await
             .map_err(|e| {
                 let status = if e.retryable() || matches!(e, PublishError::Storage) {
@@ -210,6 +216,26 @@ async fn publish_build(
             .await
             .map_err(publication_error)?
     };
+    if let Some(Extension(auth)) = auth {
+        let developer = auth.developer_id;
+        let publish = record.id;
+        let project = build.provenance.as_ref().map(|p| p.project_id);
+        state
+            .supervisor
+            .store
+            .run(move |db| {
+                crate::platform_store::audit(
+                    db,
+                    developer,
+                    "publish.requested",
+                    project,
+                    &publish.to_string(),
+                    "manual",
+                )
+            })
+            .await
+            .map_err(ApiError::internal)?;
+    }
     publishing.wake.notify_one();
     let status = if record.status.is_terminal() {
         StatusCode::OK
@@ -288,6 +314,7 @@ async fn cancel_publication(
     ))
 }
 async fn ready(
+    platform: Option<Extension<Arc<crate::platform::Platform>>>,
     State(state): State<Arc<ApiState>>,
     Extension(publishing): Extension<Option<Publishing>>,
 ) -> impl IntoResponse {
@@ -308,8 +335,19 @@ async fn ready(
     } else {
         (false, false, false)
     };
-    let ready =
-        database && manager && repository && publisher && !state.supervisor.shutdown.is_cancelled();
+    let source = if let Some(Extension(platform)) = &platform {
+        platform.worker.ready().await
+    } else {
+        true
+    };
+    let authentication = database;
+    let ready = source
+        && authentication
+        && database
+        && manager
+        && repository
+        && publisher
+        && !state.supervisor.shutdown.is_cancelled();
     let component = |ok| if ok { "ok" } else { "unavailable" };
     (
         if ready {
@@ -318,7 +356,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
+            serde_json::json!({"ready":ready,"components":{"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
         ),
     )
 }
@@ -371,6 +409,7 @@ struct Created {
     status: BuildStatus,
 }
 async fn create(
+    auth: Option<Extension<crate::auth::AuthenticatedDeveloper>>,
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
@@ -442,7 +481,11 @@ async fn create(
     let record = state
         .supervisor
         .store
-        .insert(manifest, architecture)
+        .insert_owned(
+            manifest,
+            architecture,
+            auth.map(|Extension(a)| a.developer_id),
+        )
         .await
         .map_err(|e| {
             if e.is::<store::QueueFull>() {

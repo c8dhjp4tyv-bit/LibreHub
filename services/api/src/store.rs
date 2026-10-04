@@ -76,6 +76,21 @@ impl Store {
             )?;
         }
         db.execute_batch(include_str!("../migrations/002_publications.sql"))?;
+        db.execute_batch(include_str!("../migrations/003_developer_platform.sql"))?;
+        // Existing M3 databases predate the explicit automatic-publication association.
+        let has_auto_publish_id = db
+            .prepare("PRAGMA table_info(source_events)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "auto_publish_id");
+        // Legacy rows cannot distinguish a new automatic publication from a reused manual one.
+        // Leave their association unset rather than guess from the build ID.
+        if !has_auto_publish_id {
+            db.execute_batch(
+                "ALTER TABLE source_events ADD COLUMN auto_publish_id TEXT REFERENCES publishes(id);",
+            )?;
+        }
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             _lock: Arc::new(lock),
@@ -102,6 +117,14 @@ impl Store {
         manifest: FlatpakManifest,
         architecture: Architecture,
     ) -> anyhow::Result<BuildRecord> {
+        self.insert_owned(manifest, architecture, None).await
+    }
+    pub async fn insert_owned(
+        &self,
+        manifest: FlatpakManifest,
+        architecture: Architecture,
+        owner: Option<DeveloperId>,
+    ) -> anyhow::Result<BuildRecord> {
         self.run(move |db| {
             let tx = db.transaction()?;
             let pending: i64 = tx.query_row(
@@ -126,6 +149,7 @@ impl Store {
                 error: None,
                 cancellation_requested: false,
                 logs_truncated: false,
+                provenance: None,
             };
             tx.execute(
                 "INSERT INTO builds(id,status,record,manifest) VALUES(?1,'queued',?2,?3)",
@@ -135,6 +159,20 @@ impl Store {
                     serde_json::to_string(&manifest)?
                 ],
             )?;
+            if let Some(owner) = owner {
+                tx.execute(
+                    "INSERT INTO build_owners(build_id,developer_id) VALUES(?1,?2)",
+                    params![record.id.to_string(), owner.to_string()],
+                )?;
+                crate::platform_store::audit(
+                    &tx,
+                    owner,
+                    "build.triggered",
+                    None,
+                    &record.id.to_string(),
+                    "queued",
+                )?;
+            }
             tx.commit()?;
             Ok(record)
         })

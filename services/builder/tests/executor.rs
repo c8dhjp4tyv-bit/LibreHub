@@ -31,6 +31,7 @@ fn executor(dir: &std::path::Path, mode: &str) -> DockerExecutor {
 }
 fn job(dir: &std::path::Path) -> BuildJob {
     BuildJob {
+        source_snapshot: None,
         id: BuildId::new(),
         manifest: librehub_validator::validate(
             include_str!("../../../examples/org.librehub.Hello.json"),

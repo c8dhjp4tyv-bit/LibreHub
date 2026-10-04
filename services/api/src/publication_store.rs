@@ -10,6 +10,8 @@ pub enum AdmissionError {
     Missing,
     #[error("Only successful builds with one bundle can be published")]
     Ineligible,
+    #[error("The application ID belongs to another developer")]
+    ApplicationOwned,
     #[error("The publication queue is full")]
     Full,
     #[error("Publication has passed the safe cancellation boundary")]
@@ -23,19 +25,55 @@ impl Store {
     ) -> anyhow::Result<PublishRecord> {
         self.run(move |db| {
             let tx = db.transaction()?;
-            let existing: Option<String> = tx.query_row("SELECT record FROM publishes WHERE build_id=?1 AND channel=?2", params![id.to_string(), channel.to_string()], |r| r.get(0)).optional()?;
-            if let Some(existing) = existing { return Ok(serde_json::from_str(&existing)?); }
-            let build: Option<String> = tx.query_row("SELECT record FROM builds WHERE id=?1", [id.to_string()], |r| r.get(0)).optional()?;
-            let build: BuildRecord = serde_json::from_str(&build.ok_or(AdmissionError::Missing)?)?;
-            if build.status != BuildStatus::Succeeded || build.result.as_ref().is_none_or(|r| r.artifacts.len() != 1 || r.exit_code != Some(0)) { return Err(AdmissionError::Ineligible.into()); }
-            let pending: i64 = tx.query_row("SELECT count(*) FROM publishes WHERE status NOT IN ('succeeded','failed','cancelled')", [], |r| r.get(0))?;
-            if pending >= 64 { return Err(AdmissionError::Full.into()); }
-            let now = Utc::now();
-            let record = PublishRecord { id: PublishId::new(), build_id: id, channel, status: PublishStatus::Queued, architecture: build.architecture, app_id: build.manifest.app_id, created_at: now, updated_at: now, flat_manager_build_id: None, create_requested: false, source_commit: None, result: None, error: None, needs_attention: false, attempts: 0 };
-            tx.execute("INSERT INTO publishes(id,build_id,channel,status,record) VALUES(?1,?2,?3,'queued',?4)", params![record.id.to_string(), id.to_string(), channel.to_string(), serde_json::to_string(&record)?])?;
+            let (record, _) = enqueue(&tx, id, channel)?;
             tx.commit()?;
             Ok(record)
-        }).await
+        })
+        .await
+    }
+    pub async fn enqueue_auto_publish(
+        &self,
+        event_id: SourceEventId,
+        channel: RepositoryChannel,
+    ) -> anyhow::Result<Option<PublishRecord>> {
+        self.run(move |db| {
+            let tx = db.transaction()?;
+            let (raw, state): (String, String) = tx.query_row(
+                "SELECT record,auto_publish_state FROM source_events WHERE id=?1",
+                [event_id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let source: SourceEvent = serde_json::from_str(&raw)?;
+            if state != "pending" {
+                return Ok(None);
+            }
+            if source.policy.settings.auto_publish_channel != Some(channel)
+                || !crate::platform_store::auto_policy_valid(&tx, &source)?
+            {
+                tx.execute(
+                    "UPDATE source_events SET auto_publish_state='skipped' WHERE id=?1",
+                    [event_id.to_string()],
+                )?;
+                tx.commit()?;
+                return Ok(None);
+            }
+            let (record, created) = enqueue(&tx, source.build_id, channel)?;
+            tx.execute(
+                "UPDATE source_events SET auto_publish_state='queued',auto_publish_id=?2 WHERE id=?1",
+                params![event_id.to_string(), created.then(|| record.id.to_string())],
+            )?;
+            crate::platform_store::audit(
+                &tx,
+                source.policy.owner_developer_id,
+                "publish.requested",
+                Some(source.project_id),
+                &record.id.to_string(),
+                "automatic",
+            )?;
+            tx.commit()?;
+            Ok(Some(record))
+        })
+        .await
     }
     pub async fn publish_record(&self, id: PublishId) -> anyhow::Result<Option<PublishRecord>> {
         self.run(move |db| read(db, id)).await
@@ -97,6 +135,13 @@ impl Store {
             if record.status != PublishStatus::Queued {
                 return Ok(None);
             }
+            if !crate::platform_store::auto_publish_valid(&tx, record.id)? {
+                record.status = PublishStatus::Cancelled;
+                record.updated_at = Utc::now();
+                write(&tx, &record)?;
+                tx.commit()?;
+                return Ok(None);
+            }
             record.status = PublishStatus::Preparing;
             record.updated_at = Utc::now();
             write(&tx, &record)?;
@@ -156,4 +201,98 @@ fn write(db: &Connection, record: &PublishRecord) -> anyhow::Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Returns the publication and whether it was created by this admission.
+fn enqueue(
+    db: &Connection,
+    id: BuildId,
+    channel: RepositoryChannel,
+) -> anyhow::Result<(PublishRecord, bool)> {
+    let existing: Option<String> = db
+        .query_row(
+            "SELECT record FROM publishes WHERE build_id=?1 AND channel=?2",
+            params![id.to_string(), channel.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        return Ok((serde_json::from_str(&existing)?, false));
+    }
+    let build: Option<String> = db
+        .query_row(
+            "SELECT record FROM builds WHERE id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let build: BuildRecord = serde_json::from_str(&build.ok_or(AdmissionError::Missing)?)?;
+    if build.status != BuildStatus::Succeeded
+        || build
+            .result
+            .as_ref()
+            .is_none_or(|r| r.artifacts.len() != 1 || r.exit_code != Some(0))
+    {
+        return Err(AdmissionError::Ineligible.into());
+    }
+    let owner: Option<String> = db
+        .query_row(
+            "SELECT developer_id FROM build_owners WHERE build_id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(owner) = owner {
+        let current: Option<String> = db
+            .query_row(
+                "SELECT developer_id FROM application_owners WHERE app_id=?1",
+                [&build.manifest.app_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if current.is_some_and(|developer| developer != owner) {
+            return Err(AdmissionError::ApplicationOwned.into());
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO application_owners(app_id,developer_id) VALUES(?1,?2)",
+            params![build.manifest.app_id, owner],
+        )?;
+    }
+    let pending: i64 = db.query_row(
+        "SELECT count(*) FROM publishes WHERE status NOT IN ('succeeded','failed','cancelled')",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending >= 64 {
+        return Err(AdmissionError::Full.into());
+    }
+    let now = Utc::now();
+    let record = PublishRecord {
+        id: PublishId::new(),
+        build_id: id,
+        channel,
+        status: PublishStatus::Queued,
+        architecture: build.architecture,
+        app_id: build.manifest.app_id,
+        created_at: now,
+        updated_at: now,
+        flat_manager_build_id: None,
+        create_requested: false,
+        source_commit: None,
+        result: None,
+        error: None,
+        needs_attention: false,
+        attempts: 0,
+    };
+    db.execute(
+        "INSERT INTO publishes(id,build_id,channel,status,record) VALUES(?1,?2,?3,'queued',?4)",
+        params![
+            record.id.to_string(),
+            id.to_string(),
+            channel.to_string(),
+            serde_json::to_string(&record)?
+        ],
+    )?;
+
+    Ok((record, true))
 }

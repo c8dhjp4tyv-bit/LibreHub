@@ -1,6 +1,6 @@
 # LibreHub architecture
 
-The workspace has five Rust crates. `common` owns serializable domain types,
+The workspace has six Rust crates. `common` owns serializable domain types,
 including UUID-backed IDs, architectures, UTC timestamps, manifests, state
 transitions, structured validation/build errors, logs and artifacts. Extensible
 Flatpak options remain JSON values at the manifest boundary; job state and service
@@ -82,3 +82,23 @@ publisher hold a scoped token/public key; only flat-manager holds private keys.
 
 See [publishing.md](publishing.md) for state/idempotency/recovery and
 [repository.md](repository.md) for signing, storage and future CDN deployment.
+
+## M3 developer and source boundary
+
+The API now adds a central bearer auth/authorization boundary, owner-scoped project
+and audit/token handlers, and a third durable SQLite supervisor for source events.
+`services/source` implements SourceProvider using credential-free HTTPS smart Git
+through a pinned origin relay, a fresh restricted bare Git process, bounded
+manifest discovery and regular-file snapshots. Source events persist exact SHA and
+admitted policy. One transaction inserts the M1 build, ownership/provenance and
+webhook completion, preventing duplicate handoff after a crash. The executor
+rehashes the snapshot and copies safe source files into its existing container.
+M2 owns every publication and signing action; auto-publication is just guarded,
+journaled admission to its existing queue. See developer-platform.md for policy
+race/recovery semantics and source-integration.md for the fetch trust boundary.
+
+Untrusted developer requests → authenticated ownership/admission; unverified
+webhook bytes → HMAC verification; untrusted Git → trusted restricted resolver;
+untrusted snapshot → validator/hash/type/path checks → untrusted builder; untrusted
+bundle → trusted M2 artifact verifier/publisher → trusted flat-manager signing
+boundary. Secrets cross none of the Git/snapshot/builder/public repository edges.
