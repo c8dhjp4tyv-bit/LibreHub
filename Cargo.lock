@@ -807,6 +807,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
  "fs2",
@@ -814,6 +815,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "librehub-builder",
+ "librehub-catalog",
  "librehub-common",
  "librehub-publisher",
  "librehub-source",
@@ -831,6 +833,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -852,6 +855,23 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "librehub-catalog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "librehub-common",
+ "librehub-publisher",
+ "librehub-source",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1105,6 +1125,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.39.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

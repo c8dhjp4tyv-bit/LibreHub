@@ -10,7 +10,7 @@ executor produce the bundle. Manual/automatic publication uses M2 unchanged.
 ## API and ownership
 
 All `/api/v1` developer/build/publish routes in the executable require bearer
-authentication, except signed webhooks. Health, readiness and public repository
+authentication, except signed webhooks and M4 read-only catalog routes. Health, readiness and public repository
 trust descriptors remain public. Existing M1/M2 bodies, statuses and structured
 `{code,message}` errors are preserved; requiring auth is the intentional
 compatibility change. An offline `--operator` token can access historical unowned
@@ -85,7 +85,18 @@ delivery identities and allowing replays. M1/M2 retain their 64-job queues. Sour
 snapshot limit is 64 MiB including tar structure / 4,096 regular files. Aggregate
 artifact/snapshot/database retention and host disk quotas remain operator duties.
 
-No public catalog/store, OAuth, private Git credentials, organizations, billing,
+M4 adds a public catalog/store derived from successful publication. No OAuth, private Git credentials, organizations, billing,
 moderation UI or other package formats are included. Containers still require a
 dedicated host; M3 auth does not turn M1 shared-kernel isolation into a hardened
 hostile multi-tenant service.
+
+## M4 public presentation
+
+Publishing through the same M2 APIs now asynchronously queues catalog indexing.
+Install canonical AppStream metainfo/desktop/PNG files inside the Flatpak to supply
+presentation metadata; do not duplicate those fields into project settings.
+Only successful stable publication enables default public discovery. Publisher and
+project UUIDs, display name, immutable source repository/commit and declared license
+are intentionally public. API tokens/webhooks/audit/policy remain private. Archived
+projects remain marked and installable with M3's retained-history/manual-publish
+semantics. See metadata.md for accepted standard files and catalog.md for public API.

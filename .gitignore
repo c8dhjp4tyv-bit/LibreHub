@@ -9,3 +9,9 @@
 *.sqlite3-wal
 __pycache__/
 *.pyc
+/apps/web/node_modules/
+/apps/web/.next/
+/apps/web/next-env.d.ts
+/apps/web/*.tsbuildinfo
+/apps/web/playwright-report/
+/apps/web/test-results/

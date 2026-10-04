@@ -1,4 +1,4 @@
-name: M1, M2 and M3 checks
+name: M1, M2, M3 and M4 checks
 on:
   push:
   pull_request:
@@ -23,10 +23,25 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
       - run: docker compose config --quiet
-      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
+      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+        working-directory: apps/web
+      - run: npm run lint && npm run typecheck && npm test && npm run build
+        working-directory: apps/web
   worker-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,7 +79,7 @@ jobs:
         run: |
           export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
           docker compose config --quiet
-          docker compose up -d --no-build
+          docker compose up -d --no-build postgres repository-bootstrap flat-manager repository-http worker-image
           sh scripts/wait-repository-bootstrap.sh
       - run: cargo build --workspace --locked
       - name: Real signed publish and Flatpak installation proof
@@ -85,6 +100,28 @@ jobs:
         with:
           name: developer-platform-git-workflow-proof
           path: data/m3-proof.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Build the actual store and install its browser
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Real stable catalog, store, browser and signed Flatpak reference install proof
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-public-store.py
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: public-store-signed-installation-proof
+          path: |
+            data/m4-proof.json
+            data/m4-store-mobile.png
       - name: Service diagnostics
         if: failure()
         run: docker compose logs --tail 150 flat-manager repository-http postgres repository-bootstrap

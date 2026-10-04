@@ -164,3 +164,20 @@ policy version/channel. A changed policy cancels queued automatic publication;
 claimed M2 work retains its existing side-effect/cancellation boundary. Manual
 owner-authorized publication remains available for historical successful builds.
 See [developer-platform.md](developer-platform.md) for explicit race semantics.
+
+## M4 discovery and installation
+
+Successful signed publication is the sole catalog availability input. An independent
+bounded worker indexes metadata/releases atomically; failure never invalidates the
+publication and retains last-good public presentation. Actual deployed permissions
+are read at the published signed OSTree checksum. The real web store and public
+catalog/reference routes require no developer token, while all M2 write/state APIs
+retain M3 authentication. Per-app .flatpakref files contain this same signed
+repository/key/branch/runtime configuration; verification is never disabled.
+
+Compose now also starts the web store on localhost:3000; the host API includes the
+catalog supervisor and still owns Docker execution without socket mounts. Configure
+LIBREHUB_API_PUBLIC_URL and LIBREHUB_WEB_PUBLIC_URL for real public origins. Offline
+catalog rebuild never changes signed repository state. See catalog.md, store.md,
+metadata.md and m4-verification.md for the full publication → index → browser →
+normal client flow, resource limits and executable acceptance evidence.

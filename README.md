@@ -7,6 +7,8 @@ jobs, builds in disposable containers, and preserves logs and `.flatpak` bundles
 OSTree repositories, and installation with standard Flatpak clients.
 **M3 — Developer Platform** adds scoped developer tokens, owned Git projects,
 immutable source snapshots, signed webhooks and optional automatic publication.
+**M4 — Public Store & Catalog** adds a publication-derived AppStream catalog, FTS5
+search, a real web store and signed per-app Flatpak references.
 
 ## Developer workflow
 
@@ -41,7 +43,7 @@ After the source event completes, the existing build/status/log APIs use build_i
 Set a GitHub push/create webhook to `/api/v1/webhooks/github/<PROJECT_ID>` with the
 returned secret. Signed allowed commits/tags create durable deduplicated events.
 Remove auto_publish_channel (or set null/none) for manual publishing. Public HTTPS
-smart Git is supported; private Git credentials and the public store UI are deferred.
+smart Git is supported; the public store is available in M4.
 See [developer-platform.md](docs/developer-platform.md),
 [source-integration.md](docs/source-integration.md), [webhooks.md](docs/webhooks.md)
 and [M3 verification](docs/m3-verification.md).
@@ -118,6 +120,72 @@ The `.flatpakrepo` embeds the signing public key and Flathub runtime descriptor.
 Signing private keys stay in flat-manager's trusted volume. Publication progress,
 source checksum and published checksum are durable. See [publishing.md](docs/publishing.md).
 
+
+## Public store workflow (M4)
+
+On a dedicated Linux development host with the requirements above, Node.js 22 and
+`jq`, start Compose and bootstrap a developer before starting the host API:
+
+```bash
+cargo build --workspace --locked
+export LIBREHUB_DEV_UID=$(id -u) LIBREHUB_DEV_GID=$(id -g)
+docker compose up -d --build
+sh scripts/wait-repository-bootstrap.sh
+. data/dev/publisher.env
+DEVELOPER_ID=$(./target/debug/librehub-admin create-developer "Store Developer" | jq -r .id)
+LIBREHUB_TOKEN=$(./target/debug/librehub-admin create-token "$DEVELOPER_ID" "local store" | jq -r .token)
+export LIBREHUB_TOKEN
+# API includes the catalog worker; keep this one host supervisor running.
+./target/debug/librehub-api
+```
+
+In another terminal, use that same token to build the actual LibreHub example from
+its public Git repository (explicit manifest selection avoids ambiguity):
+
+```bash
+export LIBREHUB_TOKEN='<token returned above>'
+PROJECT_ID=$(curl --fail -s http://localhost:8080/api/v1/projects \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug":"store-hello","display_name":"Store Hello","repository":{"provider":"github","url":"https://github.com/c8dhjp4tyv-bit/LibreHub"},"default_branch":"main","manifest_path":"examples/org.librehub.Hello.json"}' | jq -r .project.id)
+TRIGGER=$(curl --fail -s "http://localhost:8080/api/v1/projects/$PROJECT_ID/builds" \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" -H 'Content-Type: application/json' -d '{"ref":"main"}')
+BUILD_ID=$(printf '%s' "$TRIGGER" | jq -r .build_id)
+EVENT_ID=$(printf '%s' "$TRIGGER" | jq -r .source_event_id)
+curl --fail -s "http://localhost:8080/api/v1/projects/$PROJECT_ID/source-events/$EVENT_ID" \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN"
+curl --fail -s "http://localhost:8080/api/v1/builds/$BUILD_ID" -H "Authorization: Bearer $LIBREHUB_TOKEN"
+# Poll until source event is completed and build is succeeded, then publish:
+PUBLICATION_ID=$(curl --fail -s "http://localhost:8080/api/v1/builds/$BUILD_ID/publish" \
+  -H "Authorization: Bearer $LIBREHUB_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel":"stable"}' | jq -r .id)
+curl --fail -s "http://localhost:8080/api/v1/publishes/$PUBLICATION_ID" -H "Authorization: Bearer $LIBREHUB_TOKEN"
+# Poll until succeeded; catalog indexing follows asynchronously. Public queries need no token:
+curl --fail -s http://localhost:8080/api/v1/catalog/apps/org.librehub.Hello
+curl --fail -s 'http://localhost:8080/api/v1/catalog/search?q=org.librehub.Hello'
+```
+
+Open **http://localhost:3000**, search `org.librehub.Hello`, open its detail page and
+click **Install with Flatpak**. With no AppStream supplied the example correctly
+uses app ID/date fallback; real projects can install standard metainfo/desktop/icon
+files to provide richer metadata. The mandatory M4 acceptance builds such a project.
+Install from the same signed repository with a normal client:
+
+```bash
+flatpak remote-add --user --if-not-exists librehub http://localhost:8090/librehub.flatpakrepo
+flatpak install --user librehub org.librehub.Hello
+# Or download/open the standard reference:
+curl --fail -o org.librehub.Hello.flatpakref http://localhost:8080/api/v1/catalog/apps/org.librehub.Hello/flatpakref
+flatpak install --user ./org.librehub.Hello.flatpakref
+```
+
+See [catalog](docs/catalog.md), [metadata](docs/metadata.md), [store](docs/store.md)
+and [M4 verification](docs/m4-verification.md). Catalog GETs intentionally use public
+CORS/cache headers; developer write/read APIs keep M3 authentication and ownership.
+Compose runs web on Linux host networking to reach the host API; this preserves the
+rule that no container receives the Docker socket. `/ready` includes catalog
+worker/search availability. Offline reindex: stop API, then
+`./target/debug/librehub-admin catalog rebuild`, restart API.
+
 ## API
 
 | Method | Endpoint | Behavior |
@@ -189,6 +257,19 @@ inline example builds offline. Storage retention is manual in M1.
 
 ## Checks
 
+Frontend checks (locked install):
+
+```bash
+cd apps/web
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+cd ../..
+```
+
+
 ```bash
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -212,6 +293,10 @@ starting Compose and sourcing `data/dev/publisher.env`:
 cargo build --workspace --locked
 # Stop any existing API on port 8080; this test starts its own isolated API database.
 python3 scripts/test-publish-install.py
+python3 scripts/test-developer-platform.py
+# Stop Compose web so the acceptance can start its own production server:
+docker compose stop web
+python3 scripts/test-public-store.py
 ```
 
 The resulting `data/e2e-proof.json` is also uploaded as a CI artifact.
@@ -223,9 +308,9 @@ Code: `services/source` (HTTPS Git, manifests and source snapshots), `crates/com
 (HTTP, SQLite repository and supervisors), `services/publisher` (artifact validation,
 flat-manager client and signed public repository verification). See [architecture.md](docs/architecture.md)
 and [build-pipeline.md](docs/build-pipeline.md) for lifecycle and recovery details.
-`apps/web` reserves the M4 store UI; M3 is operated through the authenticated API.
+`services/catalog` owns bounded extraction/public models, the API owns durable
+catalog indexing/storage/search, and `apps/web` is the real Next.js store.
 
 M1 keeps its bounded bundle artifact guarantees. M2 reconstructs a private OSTree
 repository from a verified bundle using `flatpak build-import-bundle`; flat-manager
-manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Moderation, web store,
-hardened multi-tenant isolation and other package formats remain deferred.
+manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Moderation, hardened multi-tenant isolation and other package formats remain deferred.
