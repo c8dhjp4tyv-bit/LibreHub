@@ -265,7 +265,7 @@ export function TrustBadge({ trust }: { trust?: TrustSummary }) {
   if (trust.moderation_state === "under_review") {
     return <span className="badge badge-warning">Under Review</span>;
   }
-  if (trust.state === "verified_publisher") {
+  if (trust.trust_state === "verified_publisher") {
     return (
       <span
         className="badge badge-verified"
@@ -275,7 +275,7 @@ export function TrustBadge({ trust }: { trust?: TrustSummary }) {
       </span>
     );
   }
-  return <span className="badge">{trust.badge_label || "Community"}</span>;
+  return <span className="badge">{trust.trust_state === "removed" ? "Removed" : trust.trust_state === "unverified" ? "Unverified Publisher" : "Community"}</span>;
 }
 
 export function PermissionDiffNotice({ diff }: { diff?: PermissionDiff | null }) {
@@ -293,10 +293,10 @@ export function PermissionDiffNotice({ diff }: { diff?: PermissionDiff | null })
         <span className="muted">{date(diff.generated_at)}</span>
       </div>
 
-      {diff.network_changed && (
+      {diff.changed_network && (
         <p>
           <strong>Network access:</strong>{" "}
-          {diff.network_changed.to ? "Enabled (previously disabled)" : "Disabled (previously enabled)"}
+          {diff.changed_network.to ? "Enabled (previously disabled)" : "Disabled (previously enabled)"}
         </p>
       )}
 
@@ -365,9 +365,9 @@ export function PermissionDiffNotice({ diff }: { diff?: PermissionDiff | null })
         </div>
       )}
 
-      {diff.notes && diff.notes.length > 0 && (
+      {diff.summary_notes && diff.summary_notes.length > 0 && (
         <ul className="diff-notes">
-          {diff.notes.map((note, i) => (
+          {diff.summary_notes.map((note, i) => (
             <li key={i}>{note}</li>
           ))}
         </ul>
@@ -433,7 +433,7 @@ export function SecurityDetailsSection({
         ) : (
           <div className="status-vulnerable">
             <p>
-              <strong>⚠️ {security.vulnerability_counts.total} known vulnerability finding(s) detected</strong>
+              <strong>⚠️ {Object.values(security.vulnerability_counts).reduce((total, count) => total + count, 0)} known vulnerability finding(s) detected</strong>
               {security.vulnerability_counts.critical > 0 && (
                 <span className="badge badge-critical"> {security.vulnerability_counts.critical} Critical</span>
               )}

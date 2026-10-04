@@ -92,9 +92,10 @@ export function ReportForm({ appId }: { appId: string }) {
                   <option value="policy_violation">Platform policy violation</option>
                   <option value="malware">Suspected malware or security issue</option>
                   <option value="privacy_violation">Privacy violation or undisclosed telemetry</option>
-                  <option value="copyright">Copyright or trademark infringement</option>
-                  <option value="broken_release">Severely broken or non-functioning release</option>
-                  <option value="misleading_metadata">Misleading metadata or claims</option>
+                  <option value="copyright_infringement">Copyright or trademark infringement</option>
+                  <option value="broken_build">Severely broken or non-functioning release</option>
+                  <option value="security_vulnerability">Security vulnerability</option>
+                  <option value="impersonation">Impersonation</option>
                   <option value="other">Other concern</option>
                 </select>
               </label>

@@ -34,17 +34,17 @@ export interface PermissionDiff {
   from_publication_id: string | null;
   to_publication_id: string;
   severity: "none" | "low" | "moderate" | "significant";
-  network_changed: { from: boolean; to: boolean } | null;
+  changed_network: { from: boolean; to: boolean } | null;
   added: Permissions;
   removed: Permissions;
-  notes: string[];
+  summary_notes: string[];
   generated_at: string;
 }
 export interface VulnerabilityFinding {
   vulnerability_id: string;
   component_name: string;
   component_version: string;
-  severity: "low" | "medium" | "high" | "critical";
+  severity: "unknown" | "low" | "medium" | "high" | "critical";
   summary: string;
   reference_url: string | null;
   source_provider: string;
@@ -54,7 +54,7 @@ export interface ReleaseSecurityDetails {
   publication_id: string;
   app_id: string;
   channel: string;
-  status: "pending" | "analyzing" | "ready" | "failed";
+  status: "pending" | "analyzing" | "ready" | "failed" | "unavailable";
   sbom_format: string;
   sbom_component_count: number;
   sbom_sha256: string;
@@ -66,7 +66,7 @@ export interface ReleaseSecurityDetails {
     high: number;
     medium: number;
     low: number;
-    total: number;
+    unknown: number;
   };
   findings: VulnerabilityFinding[];
   permissions_extracted_at: string;
@@ -74,29 +74,31 @@ export interface ReleaseSecurityDetails {
   permission_diff: PermissionDiff | null;
 }
 export interface TrustSummary {
-  state: "verified_publisher" | "community" | "unverified" | "restricted" | "removed";
-  badge_label: string;
-  publisher_verified: boolean;
+  trust_state: "verified_publisher" | "community" | "unverified" | "restricted" | "removed";
+  publisher_verification: string;
   verified_domain: string | null;
-  moderation_state: "normal" | "under_review" | "restricted" | "removed";
-  moderation_notice: string | null;
-  latest_permission_change: "none" | "low" | "moderate" | "significant";
-  vulnerabilities_status: "clean" | "vulnerable" | "pending" | "unavailable";
-  vulnerability_counts: {
+  source_available: boolean;
+  signed_repository: boolean;
+  security_analysis: string;
+  known_vulnerabilities: {
     critical: number;
     high: number;
     medium: number;
     low: number;
-    total: number;
+    unknown: number;
   };
+  latest_permission_change: "none" | "low" | "moderate" | "significant";
+  moderation_state: "normal" | "under_review" | "restricted" | "removed";
+  moderation_notice: string | null;
 }
 export type ReportReason =
   | "malware"
   | "policy_violation"
-  | "copyright"
+  | "copyright_infringement"
   | "privacy_violation"
-  | "broken_release"
-  | "misleading_metadata"
+  | "broken_build"
+  | "security_vulnerability"
+  | "impersonation"
   | "other";
 export interface Release {
   publication_id: string;

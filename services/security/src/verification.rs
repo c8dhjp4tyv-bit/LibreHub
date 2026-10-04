@@ -178,9 +178,18 @@ fn parse_system_nameserver() -> Option<SocketAddr> {
 impl DnsResolver for SystemUdpDnsResolver {
     async fn lookup_txt(&self, domain: &str) -> anyhow::Result<Vec<String>> {
         let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-        let query = build_dns_txt_query(&domain)?;
+        let mut id = [0; 2];
+        getrandom::fill(&mut id)
+            .map_err(|e| anyhow::anyhow!("DNS query randomness unavailable: {e}"))?;
+        let id = u16::from_be_bytes(id);
+        let query = build_dns_txt_query(&domain, id)?;
 
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let bind = if self.nameserver.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let socket = UdpSocket::bind(bind).await?;
         socket.connect(self.nameserver).await?;
 
         tokio::time::timeout(self.timeout, socket.send(&query))
@@ -192,16 +201,16 @@ impl DnsResolver for SystemUdpDnsResolver {
             .await
             .map_err(|_| anyhow::anyhow!("DNS response timed out"))??;
 
-        parse_dns_txt_response(&buf[..len])
+        parse_dns_txt_response(&buf[..len], id, &domain)
     }
 }
 
 /// Builds a 12-byte header + QNAME + QTYPE(16) + QCLASS(1) query packet.
-fn build_dns_txt_query(domain: &str) -> anyhow::Result<Vec<u8>> {
+fn build_dns_txt_query(domain: &str, id: u16) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(domain.len() <= 253, "DNS name too long");
     let mut packet = Vec::with_capacity(512);
 
     // Header
-    let id: u16 = 0x4242;
     packet.extend_from_slice(&id.to_be_bytes());
     packet.extend_from_slice(&0x0100u16.to_be_bytes()); // Flags: RD = 1
     packet.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT = 1
@@ -211,7 +220,10 @@ fn build_dns_txt_query(domain: &str) -> anyhow::Result<Vec<u8>> {
 
     // QNAME
     for label in domain.split('.') {
-        anyhow::ensure!(label.len() <= 63, "Label too long for DNS packet");
+        anyhow::ensure!(
+            !label.is_empty() && label.len() <= 63,
+            "Invalid DNS label length"
+        );
         packet.push(label.len() as u8);
         packet.extend_from_slice(label.as_bytes());
     }
@@ -226,39 +238,47 @@ fn build_dns_txt_query(domain: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Parse answers from DNS response buffer, strictly extracting TXT character-strings.
-fn parse_dns_txt_response(buf: &[u8]) -> anyhow::Result<Vec<String>> {
+fn parse_dns_txt_response(buf: &[u8], id: u16, domain: &str) -> anyhow::Result<Vec<String>> {
     anyhow::ensure!(buf.len() >= 12, "DNS response buffer too short");
 
+    anyhow::ensure!(
+        u16::from_be_bytes([buf[0], buf[1]]) == id,
+        "DNS response ID mismatch"
+    );
     let flags = u16::from_be_bytes([buf[2], buf[3]]);
-    let rcode = flags & 0x000F;
-    if rcode != 0 {
-        return Ok(Vec::new()); // Non-zero RCODE (e.g. NXDOMAIN, SERVFAIL) -> no records
-    }
-
-    let qdcount = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+    anyhow::ensure!(flags & 0x8000 != 0, "DNS QR flag unset");
+    anyhow::ensure!(flags & 0x0200 == 0, "Truncated DNS response");
+    anyhow::ensure!(flags & 0x7800 == 0, "Unexpected DNS opcode");
+    let qdcount = u16::from_be_bytes([buf[4], buf[5]]);
     let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
-
-    let mut offset = 12;
-
-    // Skip question section
-    for _ in 0..qdcount {
-        offset = skip_name(buf, offset)?;
-        anyhow::ensure!(buf.len() >= offset + 4, "Truncated question section");
-        offset += 4; // QTYPE + QCLASS
+    anyhow::ensure!(qdcount == 1, "Unexpected DNS question count");
+    let (question, mut offset) = read_name(buf, 12)?;
+    anyhow::ensure!(
+        question.eq_ignore_ascii_case(domain),
+        "DNS question name mismatch"
+    );
+    anyhow::ensure!(
+        buf.get(offset..offset + 4) == Some(&[0, 16, 0, 1]),
+        "DNS question type/class mismatch"
+    );
+    offset += 4;
+    if flags & 0x000f != 0 {
+        return Ok(Vec::new());
     }
 
     let mut results = Vec::new();
-    let max_records = ancount.min(16);
-
-    for _ in 0..max_records {
-        if offset >= buf.len() {
-            break;
-        }
-        offset = skip_name(buf, offset)?;
+    anyhow::ensure!(ancount <= 64, "Too many DNS answers");
+    for _ in 0..ancount {
+        let (owner, next) = read_name(buf, offset)?;
+        anyhow::ensure!(
+            owner.eq_ignore_ascii_case(domain),
+            "DNS answer owner mismatch"
+        );
+        offset = next;
         anyhow::ensure!(buf.len() >= offset + 10, "Truncated answer header");
 
         let rtype = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
-        let _rclass = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
+        let rclass = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
         let _ttl = u32::from_be_bytes([
             buf[offset + 4],
             buf[offset + 5],
@@ -270,7 +290,7 @@ fn parse_dns_txt_response(buf: &[u8]) -> anyhow::Result<Vec<String>> {
 
         anyhow::ensure!(buf.len() >= offset + rdlength, "Truncated RDATA");
 
-        if rtype == 16 {
+        if rtype == 16 && rclass == 1 {
             // TXT RDATA is a sequence of length-prefixed strings
             let rdata = &buf[offset..offset + rdlength];
             let mut rdata_offset = 0;
@@ -279,15 +299,14 @@ fn parse_dns_txt_response(buf: &[u8]) -> anyhow::Result<Vec<String>> {
             while rdata_offset < rdata.len() {
                 let str_len = rdata[rdata_offset] as usize;
                 rdata_offset += 1;
-                if rdata_offset + str_len <= rdata.len() {
-                    if let Ok(s) = std::str::from_utf8(&rdata[rdata_offset..rdata_offset + str_len])
-                    {
-                        full_txt.push_str(s);
-                    }
-                    rdata_offset += str_len;
-                } else {
-                    break;
-                }
+                anyhow::ensure!(
+                    rdata_offset + str_len <= rdata.len(),
+                    "Truncated TXT string"
+                );
+                full_txt.push_str(std::str::from_utf8(
+                    &rdata[rdata_offset..rdata_offset + str_len],
+                )?);
+                rdata_offset += str_len;
             }
 
             if !full_txt.is_empty() && full_txt.len() <= 512 {
@@ -301,24 +320,37 @@ fn parse_dns_txt_response(buf: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(results)
 }
 
-fn skip_name(buf: &[u8], mut offset: usize) -> anyhow::Result<usize> {
-    let mut jumps = 0;
-    while offset < buf.len() {
-        let len = buf[offset];
+fn read_name(buf: &[u8], mut offset: usize) -> anyhow::Result<(String, usize)> {
+    let mut end = None;
+    let mut labels = Vec::new();
+    let mut length = 0;
+    for _ in 0..128 {
+        let len = *buf
+            .get(offset)
+            .ok_or_else(|| anyhow::anyhow!("Truncated DNS name"))?;
         if len == 0 {
-            return Ok(offset + 1);
+            return Ok((labels.join("."), end.unwrap_or(offset + 1)));
         }
-        if (len & 0xC0) == 0xC0 {
-            // Pointer
-            anyhow::ensure!(buf.len() >= offset + 2, "Truncated pointer");
-            return Ok(offset + 2);
+        if len & 0xc0 == 0xc0 {
+            let low = *buf
+                .get(offset + 1)
+                .ok_or_else(|| anyhow::anyhow!("Truncated DNS pointer"))?;
+            end.get_or_insert(offset + 2);
+            offset = (((len & 0x3f) as usize) << 8) | low as usize;
+            continue;
         }
-        let step = (len as usize) + 1;
-        offset += step;
-        jumps += 1;
-        anyhow::ensure!(jumps < 64, "DNS pointer loop detected");
+        anyhow::ensure!(len & 0xc0 == 0, "Invalid DNS label");
+        let next = offset + 1 + len as usize;
+        let label = buf
+            .get(offset + 1..next)
+            .ok_or_else(|| anyhow::anyhow!("Truncated DNS label"))?;
+        anyhow::ensure!(!label.contains(&b'.'), "Invalid DNS label separator");
+        labels.push(std::str::from_utf8(label)?.to_string());
+        length += len as usize + 1;
+        anyhow::ensure!(length <= 254, "DNS name too long");
+        offset = next;
     }
-    anyhow::bail!("Unterminated DNS name");
+    anyhow::bail!("DNS name pointer loop or excessive indirection");
 }
 
 /// Verify domain ownership by checking TXT records on `_librehub-challenge.<domain>` and `<domain>`.
@@ -363,6 +395,62 @@ pub fn default_resolver() -> Arc<dyn DnsResolver> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn txt_response(id: u16) -> Vec<u8> {
+        let mut packet = build_dns_txt_query("example.org", id).unwrap();
+        packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+        packet[6..8].copy_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&[0xc0, 12, 0, 16, 0, 1, 0, 0, 0, 60, 0, 3, 2, b'o', b'k']);
+        packet
+    }
+
+    #[test]
+    fn dns_response_is_bound_to_query() {
+        let packet = txt_response(1234);
+        assert_eq!(
+            parse_dns_txt_response(&packet, 1234, "example.org").unwrap(),
+            vec!["ok"]
+        );
+        assert!(parse_dns_txt_response(&packet, 1235, "example.org").is_err());
+        assert!(parse_dns_txt_response(&packet, 1234, "another.org").is_err());
+        for flags in [0x0180u16, 0x8380] {
+            let mut bad = packet.clone();
+            bad[2..4].copy_from_slice(&flags.to_be_bytes());
+            assert!(parse_dns_txt_response(&bad, 1234, "example.org").is_err());
+        }
+        let answer = build_dns_txt_query("example.org", 1234).unwrap().len();
+        let mut wrong_owner = packet.clone();
+        wrong_owner.splice(answer..answer + 2, [3, b'b', b'a', b'd', 0]);
+        assert!(parse_dns_txt_response(&wrong_owner, 1234, "example.org").is_err());
+        let mut looped = packet.clone();
+        looped[answer + 1] = answer as u8;
+        assert!(parse_dns_txt_response(&looped, 1234, "example.org").is_err());
+        let mut wrong_type = packet.clone();
+        wrong_type[answer - 3] = 1;
+        assert!(parse_dns_txt_response(&wrong_type, 1234, "example.org").is_err());
+        for len in 0..packet.len() {
+            assert!(parse_dns_txt_response(&packet[..len], 1234, "example.org").is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn dns_resolver_uses_ipv6_nameserver() {
+        let server = UdpSocket::bind("[::1]:0").await.unwrap();
+        let resolver = SystemUdpDnsResolver::new(server.local_addr().unwrap());
+        let reply = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let (_, peer) = server.recv_from(&mut buf).await.unwrap();
+            server
+                .send_to(&txt_response(u16::from_be_bytes([buf[0], buf[1]])), peer)
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            resolver.lookup_txt("example.org").await.unwrap(),
+            vec!["ok"]
+        );
+        reply.await.unwrap();
+    }
 
     #[test]
     fn validates_domain_syntax() {

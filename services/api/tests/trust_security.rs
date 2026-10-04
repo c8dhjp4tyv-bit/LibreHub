@@ -1,6 +1,7 @@
 use axum::{
     Router,
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
@@ -137,7 +138,12 @@ async fn call_http(
     body: Option<Value>,
     token: Option<&str>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .extension(ConnectInfo(
+            "192.0.2.10:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ));
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
     }
@@ -287,6 +293,24 @@ async fn test_permission_extraction_and_diffing() {
     assert!(diff.removed.filesystem.is_empty());
     assert!(diff.summary_notes.iter().any(|n| n.contains("home")));
     assert!(diff.summary_notes.iter().any(|n| n.contains("all")));
+    let json = serde_json::to_value(diff).unwrap();
+    assert!(json["summary_notes"].is_array());
+    assert!(json.get("changed_network").is_some());
+    for side in ["added", "removed"] {
+        for category in [
+            "filesystem",
+            "devices",
+            "sockets",
+            "dbus",
+            "shared",
+            "other",
+        ] {
+            assert!(
+                json[side][category].is_array(),
+                "{side}.{category} must always be an array"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -332,6 +356,9 @@ async fn test_vulnerability_matching_and_outage_handling() {
 
     let packages = vec![
         SbomPackage {
+            spdx_id: String::new(),
+            download_location: "NOASSERTION".into(),
+            files_analyzed: false,
             name: "openssl".to_string(),
             version: Some("1.1.1".to_string()),
             package_type: "library".to_string(),
@@ -342,6 +369,9 @@ async fn test_vulnerability_matching_and_outage_handling() {
             scope: "runtime".to_string(),
         },
         SbomPackage {
+            spdx_id: String::new(),
+            download_location: "NOASSERTION".into(),
+            files_analyzed: false,
             name: "zlib".to_string(),
             version: Some("1.2.11".to_string()),
             package_type: "library".to_string(),
@@ -568,10 +598,15 @@ async fn test_security_http_routes() {
 
     let sec_state = SecurityHttp::new(store.clone(), data_dir, "http://localhost:8080".to_string());
 
-    let app = Router::new()
-        .merge(public_router(sec_state.clone()))
-        .merge(developer_router(sec_state.clone()))
-        .merge(admin_router(sec_state));
+    let app = librehub_api::catalog_http::router(librehub_api::catalog_http::CatalogHttp {
+        store: store.clone(),
+        api_public_url: "http://localhost:8080".into(),
+        repository: None,
+        page_size: 20,
+    })
+    .merge(public_router(sec_state.clone()))
+    .merge(developer_router(sec_state.clone()))
+    .merge(admin_router(sec_state));
 
     let app_id = "org.librehub.HttpTest";
     let _pub_record = publish_app(&store, app_id, RepositoryChannel::Stable, "HTTP Test App").await;
@@ -603,4 +638,88 @@ async fn test_security_http_routes() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(report["app_id"], app_id);
     assert_eq!(report["reason"], "privacy_violation");
+}
+
+#[tokio::test]
+async fn reports_are_limited_even_without_a_reporter_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    for reporter in [None, Some("192.0.2.10")] {
+        let app = if reporter.is_some() {
+            "org.example.Known"
+        } else {
+            "org.example.Unknown"
+        };
+        for _ in 0..3 {
+            store
+                .submit_report(app, ReportReason::Other, None, reporter)
+                .await
+                .unwrap();
+        }
+        assert!(
+            store
+                .submit_report(app, ReportReason::Other, None, reporter)
+                .await
+                .is_err()
+        );
+        if reporter.is_none() {
+            assert!(
+                store
+                    .submit_report(app, ReportReason::Other, None, Some(""))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_signed_metadata_records_unavailable_without_ready_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let publication = publish_app(
+        &store,
+        "org.example.NoArtifact",
+        RepositoryChannel::Stable,
+        "Missing artifact",
+    )
+    .await;
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let worker = librehub_api::security_worker::SecurityWorker::new(
+        store.clone(),
+        Some(librehub_publisher::repository::RepositoryConfig {
+            public_base_url: "http://127.0.0.1:1".into(),
+            public_key: b"fixture".to_vec(),
+            fingerprint: "A".repeat(40),
+            runtime_repo_url: "https://example.org/runtime.flatpakrepo".into(),
+        }),
+        shutdown.clone(),
+    );
+    let task = tokio::spawn(worker.run());
+    let details = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(details) = store
+                .get_release_security_details(&publication.id)
+                .await
+                .unwrap()
+            {
+                break details;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    shutdown.cancel();
+    task.await.unwrap().unwrap();
+    assert_eq!(details.status, ReleaseSecurityState::Unavailable);
+    assert!(details.sbom_path.is_none());
+    assert!(details.permission_diff.is_none());
+    assert!(
+        store
+            .get_current_permissions(&publication.app_id, "stable")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

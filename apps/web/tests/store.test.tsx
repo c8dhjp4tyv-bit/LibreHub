@@ -157,15 +157,16 @@ describe("store components", () => {
   });
   it("renders verified publisher trust badge with domain", () => {
     const trust: TrustSummary = {
-      state: "verified_publisher",
-      badge_label: "Verified Publisher",
-      publisher_verified: true,
+      trust_state: "verified_publisher",
+      publisher_verification: "Verified domain: example.org",
+      source_available: true,
+      signed_repository: true,
+      security_analysis: "ready",
       verified_domain: "example.org",
       moderation_state: "normal",
       moderation_notice: null,
       latest_permission_change: "none",
-      vulnerabilities_status: "clean",
-      vulnerability_counts: { critical: 0, high: 0, medium: 0, low: 0, total: 0 },
+      known_vulnerabilities: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
     };
     render(<TrustBadge trust={trust} />);
     expect(screen.getByText(/Verified Publisher/)).toBeVisible();
@@ -176,7 +177,7 @@ describe("store components", () => {
       from_publication_id: "pub-1",
       to_publication_id: "pub-2",
       severity: "significant",
-      network_changed: { from: false, to: true },
+      changed_network: { from: false, to: true },
       added: {
         network: true,
         filesystem: ["home"],
@@ -195,7 +196,7 @@ describe("store components", () => {
         shared: [],
         other: [],
       },
-      notes: ["Broad filesystem access added: home"],
+      summary_notes: ["Broad filesystem access added: home"],
       generated_at: "2026-01-01T00:00:00Z",
     };
     render(<PermissionDiffNotice diff={diff} />);
@@ -217,7 +218,7 @@ describe("store components", () => {
         sbom_download_url: "/api/v1/catalog/apps/org.example.Test/releases/pub-1/sbom/download",
         vulnerabilities_status: "vulnerable",
         vulnerabilities_checked_at: "2026-01-01T00:00:00Z",
-        vulnerability_counts: { critical: 1, high: 0, medium: 0, low: 0, total: 1 },
+        vulnerability_counts: { critical: 1, high: 0, medium: 0, low: 0, unknown: 0 },
         findings: [
           {
             vulnerability_id: "GHSA-1234",

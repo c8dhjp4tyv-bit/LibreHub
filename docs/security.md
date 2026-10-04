@@ -195,3 +195,11 @@ browser's future DNS. No backend screenshot SSRF/proxy surface is introduced.
 
 Review catalog.md/metadata.md/store.md for exact policy/limits and
 m4-verification.md for XSS, URL, visibility, persistence and signed-install evidence.
+
+### Report submission behind a proxy
+
+Report rate limits use the socket peer IP by default. Set
+`LIBREHUB_TRUSTED_PROXIES` to comma-separated proxy IP addresses to accept
+`X-Forwarded-For` from those peers. The chain is walked from right to left up
+to the first untrusted address; proxies must append the connecting client IP.
+Unidentified store callers share a per-app cap of three reports per 24 hours.

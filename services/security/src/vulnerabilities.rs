@@ -177,7 +177,11 @@ impl VulnerabilityProvider for OsvProvider {
                         ecosystem: None,
                         purl: Some(purl),
                     },
-                    version: pkg.version.as_deref(),
+                    version: if purl.split(['?', '#']).next().unwrap_or(purl).contains('@') {
+                        None
+                    } else {
+                        pkg.version.as_deref()
+                    },
                 });
                 package_index_map.push(pkg);
             }
@@ -293,6 +297,75 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn osv_wire_queries_do_not_duplicate_versions_and_keep_component_mapping() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = OsvProvider::new(&format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let body = loop {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        break serde_json::from_slice::<serde_json::Value>(
+                            &bytes[end + 4..end + 4 + length],
+                        )
+                        .unwrap();
+                    }
+                }
+            };
+            assert_eq!(body["queries"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                body["queries"][0]["package"]["purl"],
+                "pkg:generic/versioned@1.0"
+            );
+            assert!(body["queries"][0].get("version").is_none());
+            assert_eq!(body["queries"][1]["version"], "2.0");
+            let body = r#"{"results":[{}, {"vulns":[{"id":"TEST-1"}]}]}"#;
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+        });
+        let packages: Vec<_> = [
+            ("skipped", None, None),
+            ("versioned", Some("pkg:generic/versioned@1.0"), Some("1.0")),
+            ("unversioned", Some("pkg:generic/unversioned"), Some("2.0")),
+        ]
+        .into_iter()
+        .map(|(name, purl, version)| SbomPackage {
+            spdx_id: String::new(),
+            download_location: "NOASSERTION".into(),
+            files_analyzed: false,
+            name: name.into(),
+            version: version.map(str::to_string),
+            purl: purl.map(str::to_string),
+            package_type: "library".into(),
+            license: None,
+            source: None,
+            hashes: Default::default(),
+            scope: "runtime".into(),
+        })
+        .collect();
+        let findings = provider.check_packages(&packages).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].component_name, "unversioned");
+        assert_eq!(findings[0].component_version, "2.0");
+    }
+
+    #[tokio::test]
     async fn fixture_provider_matches_components() {
         let finding = VulnerabilityFinding {
             vulnerability_id: "CVE-2026-9999".to_string(),
@@ -308,6 +381,9 @@ mod tests {
         let provider = FixtureVulnerabilityProvider::new(vec![finding]);
         let packages = vec![
             SbomPackage {
+                spdx_id: String::new(),
+                download_location: "NOASSERTION".into(),
+                files_analyzed: false,
                 name: "openssl".to_string(),
                 version: Some("1.1.1".to_string()),
                 package_type: "library".to_string(),
@@ -318,6 +394,9 @@ mod tests {
                 scope: "runtime".to_string(),
             },
             SbomPackage {
+                spdx_id: String::new(),
+                download_location: "NOASSERTION".into(),
+                files_analyzed: false,
                 name: "zlib".to_string(),
                 version: Some("1.2.13".to_string()),
                 package_type: "library".to_string(),

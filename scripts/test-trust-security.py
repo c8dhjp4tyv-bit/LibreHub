@@ -177,7 +177,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         # Wait for security analysis job to finish
         sec_details = api.wait(
             f'/api/v1/catalog/apps/{APP}/releases/{pub1_id}/security',
-            lambda s: s.get('status') in ['ready', 'failed']
+            lambda s: s.get('status') in ['ready', 'failed', 'unavailable']
         )
         assert sec_details['status'] == 'ready', f"Expected security analysis ready, got {sec_details}"
         assert sec_details['sbom_format'] == 'SPDX-2.3'
@@ -189,13 +189,13 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         sbom_bytes = public_raw(f'/api/v1/catalog/apps/{APP}/releases/{pub1_id}/sbom/download')
         sbom_json = json.loads(sbom_bytes.decode('utf-8'))
         assert sbom_json['spdxVersion'] == 'SPDX-2.3'
-        assert sbom_json['name'] == APP
+        assert sbom_json['name'] == f"{APP}-{manifest['runtime-version']}"
         assert len(sbom_json['packages']) >= 1
 
         # Check initial trust summary: community unverified publisher
         trust = public(f'/api/v1/catalog/apps/{APP}/trust')
-        assert trust['state'] == 'community'
-        assert not trust['publisher_verified']
+        assert trust['trust_summary']['trust_state'] == 'unverified'
+        assert trust['verified_domain'] is None
         assert trust['moderation_state'] == 'normal'
 
         print("[3/7] Verifying Publisher Domain Challenge & DNS TXT Verification...")
@@ -226,8 +226,8 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
 
         # Step E: Verify Trust State updated to verified_publisher
         trust = public(f'/api/v1/catalog/apps/{APP}/trust')
-        assert trust['state'] == 'verified_publisher'
-        assert trust['publisher_verified'] is True
+        assert trust['trust_summary']['trust_state'] == 'verified_publisher'
+        assert trust['publisher_verification'] == 'verified'
         assert trust['verified_domain'] == domain
 
         print("[4/7] Verifying Release v1.1.0 with Materially Broader Permissions & Diff Detection...")
@@ -263,7 +263,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         # Wait for security analysis for v1.1.0
         sec_details2 = api.wait(
             f'/api/v1/catalog/apps/{APP}/releases/{pub2_id}/security',
-            lambda s: s.get('status') in ['ready', 'failed']
+            lambda s: s.get('status') in ['ready', 'failed', 'unavailable']
         )
         assert sec_details2['status'] == 'ready'
         assert sec_details2['permission_severity'] == 'significant'
@@ -274,44 +274,43 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         assert diff['to_publication_id'] == pub2_id
         assert 'home' in diff['added']['filesystem']
         assert 'all' in diff['added']['devices']
-        assert any('home' in note for note in diff['notes'])
+        assert any('home' in note for note in diff['summary_notes'])
 
         # Trust summary reflects latest permission change severity
         trust = public(f'/api/v1/catalog/apps/{APP}/trust')
-        assert trust['latest_permission_change'] == 'significant'
+        assert trust['trust_summary']['latest_permission_change'] == 'significant'
 
         print("[5/7] Verifying Public Report Submission and Resolution...")
         # Submit report as an end-user
-        report_res = public_raw(f'/api/v1/catalog/apps/{APP}/reports')  # Method not allowed or check POST
         report = api.request(f'/api/v1/catalog/apps/{APP}/reports', {
             'reason': 'privacy_violation',
             'message': 'App unexpectedly added broad home filesystem access in version 1.1.0'
         })
         assert report['app_id'] == APP
         assert report['reason'] == 'privacy_violation'
-        assert report['status'] == 'pending'
+        assert report['status'] == 'open'
         report_id = report['id']
 
         # List reports via admin CLI
-        reports_list = json.loads(run([admin, 'reports', 'list', '--status', 'pending'], env))
+        reports_list = json.loads(run([admin, 'reports', 'list', '--status', 'open'], env))
         assert any(r['id'] == report_id for r in reports_list)
 
         # Resolve report via admin CLI
         resolved = json.loads(run([
-            admin, 'reports', 'resolve', report_id, 'triaged',
+            admin, 'reports', 'resolve', report_id, 'resolved',
             '--note', 'Permission change confirmed in diff; triaged for operator review.'
         ], env))
-        assert resolved['status'] == 'triaged'
+        assert resolved['status'] == 'resolved'
         assert resolved['resolution_note'] == 'Permission change confirmed in diff; triaged for operator review.'
 
         print("[6/7] Verifying Operator Moderation Actions and Catalog Visibility...")
         # Step A: Apply moderation: restricted
         mod_event = json.loads(run([
-            admin, 'catalog', 'moderate', APP, 'restricted', 'policy_violation',
+            admin, 'catalog', 'moderate', APP, 'restrict', 'malware_report',
             '--public-note', 'Temporarily restricted while permission expansion is investigated',
             '--internal-note', 'Triggered by user report'
         ], env))
-        assert mod_event['action'] == 'restricted'
+        assert mod_event['action'] == 'restrict'
 
         # Restricted apps MUST be hidden from catalog lists & search
         apps_list = public('/api/v1/catalog/apps')
@@ -327,7 +326,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
 
         # Step B: Apply moderation: removed
         json.loads(run([
-            admin, 'catalog', 'moderate', APP, 'removed', 'malware_suspected',
+            admin, 'catalog', 'moderate', APP, 'remove', 'malware_report',
             '--public-note', 'Application removed for safety'
         ], env))
 
@@ -340,7 +339,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
 
         # Step C: Re-instate app
         json.loads(run([
-            admin, 'catalog', 'moderate', APP, 'reinstate', 'developer_request',
+            admin, 'catalog', 'moderate', APP, 'restore', 'malware_report',
             '--public-note', 'Reinstated after review'
         ], env))
 

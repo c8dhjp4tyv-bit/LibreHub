@@ -149,7 +149,7 @@ impl SecurityWorker {
             &publication,
             &repository,
         )
-        .await;
+        .await?;
 
         // 3. Extract and snapshot permissions
         let snapshot = librehub_security::parse_permission_snapshot(&metadata_text)?;
@@ -196,6 +196,9 @@ impl SecurityWorker {
                 }
             }
             additional_modules.push(SbomPackage {
+                spdx_id: String::new(),
+                download_location: src_url.clone().unwrap_or_else(|| "NOASSERTION".into()),
+                files_analyzed: false,
                 name: m.name.clone(),
                 version: ver,
                 package_type: "library".to_string(),
@@ -306,131 +309,78 @@ async fn extract_metadata_text(
     manifest: &FlatpakManifest,
     publication: &PublishRecord,
     repository: &RepositoryConfig,
-) -> String {
-    if let Some(ref result) = publication.result
-        && let Ok(prepared) = librehub_publisher::artifact::prepare(
-            data_dir,
-            build.clone(),
-            manifest.clone(),
-            publication.architecture,
-            Duration::from_secs(60),
-        )
-        .await
-    {
-        let signed = format!(
-            "--repo={}",
-            prepared.workspace.path().join("signed").display()
-        );
-        let key = prepared.workspace.path().join("catalog-public.gpg");
-        if tokio::fs::write(&key, &repository.public_key).await.is_ok() {
-            let init = tokio::process::Command::new("ostree")
-                .args([&signed, "init", "--mode=archive-z2"])
-                .output()
-                .await;
-            if init.is_ok() {
-                let remote = tokio::process::Command::new("ostree")
-                    .args([
-                        &signed,
-                        "remote",
-                        "add",
-                        "--set=gpg-verify=true",
-                        "--set=gpg-verify-summary=true",
-                        &format!("--gpg-import={}", key.display()),
-                        "librehub",
-                        &repository.url(publication.channel),
-                    ])
-                    .output()
-                    .await;
-                if remote.is_ok() {
-                    let pull = tokio::process::Command::new("ostree")
-                        .args([
-                            &signed,
-                            "pull",
-                            "--subpath=/metadata",
-                            "librehub",
-                            &result.published_ref.commit,
-                        ])
-                        .output()
-                        .await;
-                    if pull.is_ok() {
-                        let cat_res = tokio::process::Command::new("ostree")
-                            .args([&signed, "cat", &result.published_ref.commit, "/metadata"])
-                            .output()
-                            .await;
-                        if let Ok(out) = cat_res
-                            && out.status.success()
-                            && let Ok(text) = String::from_utf8(out.stdout)
-                        {
-                            return text;
-                        }
-                    }
-                }
-            }
-        }
+) -> anyhow::Result<String> {
+    let result = publication
+        .result
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Signed publication result unavailable"))?;
+    let prepared = librehub_publisher::artifact::prepare(
+        data_dir,
+        build.clone(),
+        manifest.clone(),
+        publication.architecture,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let signed = format!(
+        "--repo={}",
+        prepared.workspace.path().join("signed").display()
+    );
+    let key = prepared.workspace.path().join("catalog-public.gpg");
+    tokio::fs::write(&key, &repository.public_key).await?;
+    ostree_output(&[&signed, "init", "--mode=archive-z2"]).await?;
+    ostree_output(&[
+        &signed,
+        "remote",
+        "add",
+        "--set=gpg-verify=true",
+        "--set=gpg-verify-summary=true",
+        &format!("--gpg-import={}", key.display()),
+        "librehub",
+        &repository.url(publication.channel),
+    ])
+    .await?;
+    ostree_output(&[
+        &signed,
+        "pull",
+        "--subpath=/metadata",
+        "librehub",
+        &result.published_ref.commit,
+    ])
+    .await?;
+    let bytes = ostree_output(&[&signed, "cat", &result.published_ref.commit, "/metadata"]).await?;
+    Ok(String::from_utf8(bytes)?)
+}
 
-        // Fallback: read directly from prepared repo if available
-        let cat_prep = tokio::process::Command::new("ostree")
-            .args([
-                &format!("--repo={}", prepared.path.display()),
-                "cat",
-                &prepared.commit,
-                "/metadata",
-            ])
-            .output()
-            .await;
-        if let Ok(out) = cat_prep
-            && out.status.success()
-            && let Ok(text) = String::from_utf8(out.stdout)
-        {
-            return text;
-        }
-    }
+async fn ostree_output(args: &[&str]) -> anyhow::Result<Vec<u8>> {
+    let output = tokio::process::Command::new("ostree")
+        .args(args)
+        .output()
+        .await?;
+    checked_output(output)
+}
 
-    // Fallback: reconstruct metadata ini from manifest finish_args
-    let app_id = &publication.app_id;
-    let mut lines = vec![
-        "[Application]".to_string(),
-        format!("name={app_id}"),
-        format!("runtime={}", manifest.runtime),
-        format!("sdk={}", manifest.sdk),
-        format!("command={}", manifest.command),
-        "".to_string(),
-        "[Context]".to_string(),
-    ];
-    let mut filesystems = Vec::new();
-    let mut sockets = Vec::new();
-    let mut shared = Vec::new();
-    let mut devices = Vec::new();
-    for (k, v) in &manifest.options {
-        if k == "finish-args"
-            && let Some(arr) = v.as_array()
-        {
-            for item in arr {
-                if let Some(arg) = item.as_str() {
-                    if let Some(fs) = arg.strip_prefix("--filesystem=") {
-                        filesystems.push(fs.to_string());
-                    } else if let Some(sock) = arg.strip_prefix("--socket=") {
-                        sockets.push(sock.to_string());
-                    } else if let Some(sh) = arg.strip_prefix("--share=") {
-                        shared.push(sh.to_string());
-                    } else if let Some(dev) = arg.strip_prefix("--device=") {
-                        devices.push(dev.to_string());
-                    }
-                }
-            }
-        }
+fn checked_output(output: std::process::Output) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        output.status.success(),
+        "Signed metadata OSTree command failed: {}",
+        output.status
+    );
+    Ok(output.stdout)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn failed_ostree_command_cannot_supply_metadata() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(256),
+            stdout: b"[Application]\nname=org.example.App".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert!(checked_output(output).is_err());
     }
-    if !filesystems.is_empty() {
-        lines.push(format!("filesystems={}", filesystems.join(";")));
-    }
-    if !sockets.is_empty() {
-        lines.push(format!("sockets={}", sockets.join(";")));
-    }
-    if !shared.is_empty() {
-        lines.push(format!("shared={}", shared.join(";")));
-    }
-    if !devices.is_empty() {
-        lines.push(format!("devices={}", devices.join(";")));
-    }
-    lines.join("\n")
 }

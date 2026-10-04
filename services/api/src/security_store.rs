@@ -968,7 +968,7 @@ impl Store {
             bounded.trim().to_string()
         });
 
-        let reporter_hash = reporter_ip.map(|ip| {
+        let reporter_hash = reporter_ip.filter(|ip| !ip.trim().is_empty()).map(|ip| {
             let salt = now.format("%Y-%m-%d").to_string();
             let mut hasher = Sha256::new();
             hasher.update(ip.as_bytes());
@@ -984,6 +984,13 @@ impl Store {
                 let count: i64 = tx.query_row(
                     "SELECT count(*) FROM app_reports WHERE app_id=?1 AND reporter_hash=?2 AND created_at >= ?3",
                     params![app, hash, (now - chrono::Duration::hours(24)).to_rfc3339()],
+                    |r| r.get(0),
+                )?;
+                ensure!(count < 3, "Too many reports submitted. Please wait before submitting another report.");
+            } else {
+                let count: i64 = tx.query_row(
+                    "SELECT count(*) FROM app_reports WHERE app_id=?1 AND created_at >= ?2",
+                    params![app, (now - chrono::Duration::hours(24)).to_rfc3339()],
                     |r| r.get(0),
                 )?;
                 ensure!(count < 3, "Too many reports submitted. Please wait before submitting another report.");

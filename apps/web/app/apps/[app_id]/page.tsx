@@ -237,9 +237,9 @@ export default async function AppPage(props: Props) {
             <dd>{app.publisher.display_name}</dd>
             <dt>Publisher verification</dt>
             <dd>
-              {app.trust?.publisher_verified ? (
+              {app.trust?.verified_domain ? (
                 <span className="badge badge-verified">
-                  ✓ Verified domain: {app.trust.verified_domain}
+                  ✓ {app.trust.publisher_verification}
                 </span>
               ) : (
                 <span className="badge">Community (unverified domain)</span>

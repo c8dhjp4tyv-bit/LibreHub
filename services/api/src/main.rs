@@ -88,11 +88,18 @@ async fn main() -> anyhow::Result<()> {
         supervisor.shutdown.clone(),
     );
     let security_task = tokio::spawn(security_worker.clone().run());
-    let security_http_state = librehub_api::security_http::SecurityHttp::new(
+    let mut security_http_state = librehub_api::security_http::SecurityHttp::new(
         supervisor.store.clone(),
         data_dir.clone(),
         catalog_config.api_public_url.clone(),
     );
+    security_http_state.trusted_proxies = std::env::var("LIBREHUB_TRUSTED_PROXIES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|ip| !ip.trim().is_empty())
+        .map(|ip| ip.trim().parse())
+        .collect::<Result<Vec<_>, _>>()
+        .context("LIBREHUB_TRUSTED_PROXIES must contain comma-separated IP addresses")?;
     let sec_public = librehub_api::security_http::public_router(security_http_state.clone());
     let sec_dev = librehub_api::security_http::developer_router(security_http_state.clone())
         .route_layer(axum::middleware::from_fn_with_state(
@@ -127,9 +134,12 @@ async fn main() -> anyhow::Result<()> {
         shutdown_signal().await;
         signal_shutdown.cancel();
     });
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown.clone().cancelled_owned())
-        .await;
+    let result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned())
+    .await;
     shutdown.cancel();
     // The executor stops containers before shutdown returns; pending jobs remain durable.
     let worker_result = worker.await.context("Worker task failed")?;

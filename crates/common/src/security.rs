@@ -309,17 +309,17 @@ impl FromStr for ReleaseSecurityState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionSnapshot {
     pub network: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub filesystem: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub devices: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub sockets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub dbus: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub shared: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub other: Vec<String>,
 }
 
@@ -377,14 +377,107 @@ pub struct NetworkChange {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SbomPackage {
+    #[serde(rename = "SPDXID")]
+    pub spdx_id: String,
     pub name: String,
+    #[serde(rename = "versionInfo", skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(rename = "downloadLocation")]
+    pub download_location: String,
+    #[serde(rename = "filesAnalyzed")]
+    pub files_analyzed: bool,
+    #[serde(skip)]
     pub package_type: String,
+    #[serde(
+        rename = "externalRefs",
+        with = "spdx_purl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub purl: Option<String>,
+    #[serde(rename = "licenseDeclared", skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    #[serde(rename = "sourceInfo", skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(
+        rename = "checksums",
+        with = "spdx_checksums",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub hashes: BTreeMap<String, String>,
+    #[serde(skip)]
     pub scope: String,
+}
+
+mod spdx_purl {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExternalRef {
+        reference_category: String,
+        reference_type: String,
+        reference_locator: String,
+    }
+
+    pub fn serialize<S: Serializer>(
+        purl: &Option<String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        purl.iter()
+            .map(|purl| ExternalRef {
+                reference_category: "PACKAGE-MANAGER".into(),
+                reference_type: "purl".into(),
+                reference_locator: purl.clone(),
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<String>, D::Error> {
+        Ok(Vec::<ExternalRef>::deserialize(deserializer)?
+            .into_iter()
+            .find(|r| r.reference_category == "PACKAGE-MANAGER" && r.reference_type == "purl")
+            .map(|r| r.reference_locator))
+    }
+}
+
+mod spdx_checksums {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Checksum {
+        algorithm: String,
+        checksum_value: String,
+    }
+
+    pub fn serialize<S: Serializer>(
+        hashes: &BTreeMap<String, String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        hashes
+            .iter()
+            .map(|(algorithm, value)| Checksum {
+                algorithm: algorithm.clone(),
+                checksum_value: value.clone(),
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, String>, D::Error> {
+        Ok(Vec::<Checksum>::deserialize(deserializer)?
+            .into_iter()
+            .map(|c| (c.algorithm, c.checksum_value))
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

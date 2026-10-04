@@ -29,6 +29,9 @@ pub fn generate_spdx_document(input: SbomInput) -> SbomDocument {
     app_hashes.insert("SHA256".to_string(), input.ostree_checksum.to_string());
 
     packages.push(SbomPackage {
+        spdx_id: root_spdx_id.clone(),
+        download_location: "NOASSERTION".into(),
+        files_analyzed: false,
         name: input.app_id.to_string(),
         version: Some(input.version.to_string()),
         package_type: "application".to_string(),
@@ -51,6 +54,9 @@ pub fn generate_spdx_document(input: SbomInput) -> SbomDocument {
         if let Some(r_name) = runtime_name {
             let r_spdx_id = format!("SPDXRef-Runtime-{}", sanitize_spdx_id(&r_name));
             packages.push(SbomPackage {
+                spdx_id: r_spdx_id.clone(),
+                download_location: "NOASSERTION".into(),
+                files_analyzed: false,
                 name: r_name.clone(),
                 version: runtime_ver.clone(),
                 package_type: "runtime".to_string(),
@@ -75,6 +81,9 @@ pub fn generate_spdx_document(input: SbomInput) -> SbomDocument {
         if let Some(s_name) = sdk_name {
             let s_spdx_id = format!("SPDXRef-Sdk-{}", sanitize_spdx_id(&s_name));
             packages.push(SbomPackage {
+                spdx_id: s_spdx_id.clone(),
+                download_location: "NOASSERTION".into(),
+                files_analyzed: false,
                 name: s_name.clone(),
                 version: sdk_ver.clone(),
                 package_type: "sdk".to_string(),
@@ -97,8 +106,9 @@ pub fn generate_spdx_document(input: SbomInput) -> SbomDocument {
     }
 
     // 3. Additional modules/components
-    for (i, module) in input.additional_modules.into_iter().enumerate() {
+    for (i, mut module) in input.additional_modules.into_iter().enumerate() {
         let mod_spdx_id = format!("SPDXRef-Package-{}-{}", sanitize_spdx_id(&module.name), i);
+        module.spdx_id = mod_spdx_id.clone();
         relationships.push(SbomRelationship {
             spdx_element_id: root_spdx_id.clone(),
             related_spdx_element: mod_spdx_id,
@@ -208,6 +218,9 @@ mod tests {
             license: Some("MIT"),
             metadata_text: Some(metadata),
             additional_modules: vec![SbomPackage {
+                spdx_id: String::new(),
+                download_location: "NOASSERTION".into(),
+                files_analyzed: false,
                 name: "zlib".to_string(),
                 version: Some("1.2.13".to_string()),
                 package_type: "library".to_string(),
@@ -226,6 +239,31 @@ mod tests {
         assert_eq!(doc.packages[0].license.as_deref(), Some("MIT"));
         assert_eq!(doc.packages[1].name, "org.freedesktop.Platform");
         assert_eq!(doc.packages[1].version.as_deref(), Some("25.08"));
+        let json = serde_json::to_value(&doc).unwrap();
+        for (package, serialized) in doc
+            .packages
+            .iter()
+            .zip(json["packages"].as_array().unwrap())
+        {
+            assert_eq!(serialized["SPDXID"], package.spdx_id);
+            assert_eq!(serialized["downloadLocation"], "NOASSERTION");
+            assert_eq!(serialized["filesAnalyzed"], false);
+            assert!(serialized.get("version").is_none());
+            assert!(serialized.get("purl").is_none());
+            assert!(
+                doc.relationships
+                    .iter()
+                    .any(|r| r.related_spdx_element == package.spdx_id)
+            );
+        }
+        assert_eq!(json["packages"][0]["versionInfo"], "1.0.0");
+        assert_eq!(json["packages"][0]["checksums"][0]["algorithm"], "SHA256");
+        assert_eq!(
+            json["packages"][0]["externalRefs"][0]["referenceLocator"],
+            "pkg:generic/org.librehub.Demo@1.0.0"
+        );
+        let roundtrip: SbomDocument = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(roundtrip).unwrap(), json);
     }
 
     #[tokio::test]

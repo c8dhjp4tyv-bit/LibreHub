@@ -1,7 +1,7 @@
 use crate::{auth::AuthenticatedDeveloper, http::ApiError, store::Store};
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::Response,
     routing::{delete, get, post},
@@ -14,7 +14,11 @@ use librehub_common::{
 };
 use librehub_security::{DnsResolver, default_resolver};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct SecurityHttp {
@@ -22,6 +26,7 @@ pub struct SecurityHttp {
     pub data_dir: PathBuf,
     pub dns_resolver: Arc<dyn DnsResolver>,
     pub api_public_url: String,
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl SecurityHttp {
@@ -31,31 +36,32 @@ impl SecurityHttp {
             data_dir,
             dns_resolver: default_resolver(),
             api_public_url,
+            trusted_proxies: Vec::new(),
         }
     }
 }
 
 pub fn public_router(state: SecurityHttp) -> Router {
     Router::new()
-        .route("/api/v1/catalog/apps/{app_id}/security", get(app_security))
-        .route("/api/v1/catalog/apps/{app_id}/trust", get(app_security))
+        .route("/api/v1/catalog/apps/{id}/security", get(app_security))
+        .route("/api/v1/catalog/apps/{id}/trust", get(app_security))
         .route(
-            "/api/v1/catalog/apps/{app_id}/releases/{release_id}/security",
+            "/api/v1/catalog/apps/{id}/releases/{release_id}/security",
             get(release_security),
         )
         .route(
-            "/api/v1/catalog/apps/{app_id}/releases/{release_id}/sbom",
+            "/api/v1/catalog/apps/{id}/releases/{release_id}/sbom",
             get(release_sbom),
         )
         .route(
-            "/api/v1/catalog/apps/{app_id}/releases/{release_id}/sbom/download",
+            "/api/v1/catalog/apps/{id}/releases/{release_id}/sbom/download",
             get(download_sbom),
         )
         .route(
-            "/api/v1/catalog/apps/{app_id}/permissions",
+            "/api/v1/catalog/apps/{id}/permissions",
             get(app_permissions),
         )
-        .route("/api/v1/catalog/apps/{app_id}/reports", post(submit_report))
+        .route("/api/v1/catalog/apps/{id}/reports", post(submit_report))
         .with_state(Arc::new(state))
 }
 
@@ -79,7 +85,7 @@ pub fn developer_router(state: SecurityHttp) -> Router {
 pub fn admin_router(state: SecurityHttp) -> Router {
     Router::new()
         .route(
-            "/api/v1/admin/catalog/apps/{app_id}/moderation",
+            "/api/v1/admin/catalog/apps/{id}/moderation",
             post(apply_moderation_handler).get(list_moderation_events_handler),
         )
         .route("/api/v1/admin/reports", get(list_reports_handler))
@@ -363,6 +369,7 @@ struct SubmitReportRequest {
 async fn submit_report(
     State(state): State<Arc<SecurityHttp>>,
     Path(app_id): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<SubmitReportRequest>,
 ) -> Result<(StatusCode, Json<ReportRecord>), ApiError> {
@@ -380,16 +387,11 @@ async fn submit_report(
         ));
     }
 
-    // Extract caller IP for rate limiting / logging
-    let caller_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim());
+    let caller_ip = reporter_ip(peer.ip(), &headers, &state.trusted_proxies).to_string();
 
     let record = state
         .store
-        .submit_report(&app_id, payload.reason, payload.message, caller_ip)
+        .submit_report(&app_id, payload.reason, payload.message, Some(&caller_ip))
         .await
         .map_err(ApiError::internal)?;
 
@@ -629,4 +631,51 @@ async fn resolve_report_handler(
         })?;
 
     Ok(Json(resolved))
+}
+
+// Walk from the trusted edge toward the client; never trust a leftmost value
+// supplied by an untrusted intermediary or the client itself.
+fn reporter_ip(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpAddr]) -> IpAddr {
+    if !trusted_proxies.contains(&peer) {
+        return peer;
+    }
+    let Some(value) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) else {
+        return peer;
+    };
+    let Ok(chain) = value
+        .split(',')
+        .map(|ip| ip.trim().parse::<IpAddr>())
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return peer;
+    };
+    let mut caller = peer;
+    for ip in chain.into_iter().rev() {
+        if !trusted_proxies.contains(&caller) {
+            break;
+        }
+        caller = ip;
+    }
+    caller
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_ip_only_trusts_configured_proxy_chain() {
+        let peer = "192.0.2.1".parse().unwrap();
+        let client: IpAddr = "198.51.100.1".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.1, 198.51.100.1".parse().unwrap(),
+        );
+        assert_eq!(reporter_ip(peer, &headers, &[]), peer);
+        assert_eq!(reporter_ip(peer, &headers, &[peer]), client);
+        headers.insert("x-forwarded-for", "invalid".parse().unwrap());
+        assert_eq!(reporter_ip(peer, &headers, &[peer]), peer);
+        assert_eq!(reporter_ip(peer, &HeaderMap::new(), &[peer]), peer);
+    }
 }
