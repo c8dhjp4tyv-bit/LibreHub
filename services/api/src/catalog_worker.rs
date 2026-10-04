@@ -41,19 +41,37 @@ impl CatalogWorker {
             if let Some(repository) = &self.repository
                 && let Some(publication) = self.store.catalog_claim().await?
             {
-                let build = self
-                    .store
-                    .get(publication.build_id)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("Catalog source missing"))?;
-                let manifest = self.store.manifest(publication.build_id).await?;
-                let extraction = librehub_catalog::extract::extract(
-                    self.store.data_dir.clone(),
-                    build,
-                    manifest,
-                    publication.clone(),
-                    repository.clone(),
-                );
+                let extraction = async {
+                    let mut attempts = 0;
+                    let (build, manifest) = loop {
+                        let lookup = async {
+                            let Some(build) = self.store.get(publication.build_id).await? else {
+                                return Ok(None);
+                            };
+                            let manifest = self.store.manifest(publication.build_id).await?;
+                            Ok::<_, anyhow::Error>(Some((build, manifest)))
+                        }
+                        .await;
+                        attempts += 1;
+                        match lookup {
+                            Ok(Some(source)) => break source,
+                            Ok(None) => anyhow::bail!("Catalog source missing"),
+                            Err(error) if attempts < 3 => {
+                                tracing::warn!(publication_id=%publication.id, %error, "Catalog source lookup failed; retrying");
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    };
+                    librehub_catalog::extract::extract(
+                        self.store.data_dir.clone(),
+                        build,
+                        manifest,
+                        publication.clone(),
+                        repository.clone(),
+                    )
+                    .await
+                };
                 let result = tokio::select! { _=self.shutdown.cancelled()=>return Ok(()), result=tokio::time::timeout(std::time::Duration::from_secs(300),extraction)=>result };
                 match result {
                     Ok(Ok(extracted)) => self.store.catalog_commit(publication, extracted).await?,

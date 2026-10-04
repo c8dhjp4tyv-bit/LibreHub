@@ -137,6 +137,7 @@ pub trait CatalogStorage: Send + Sync {
     async fn releases(
         &self,
         app_id: String,
+        channel: RepositoryChannel,
         limit: usize,
         offset: usize,
     ) -> anyhow::Result<CatalogPage<PublicRelease>>;

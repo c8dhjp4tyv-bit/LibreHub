@@ -205,6 +205,8 @@ with tempfile.TemporaryDirectory(prefix='librehub-m4-') as temporary:
                     if response.status == 200: break
             except urllib.error.URLError: pass
             time.sleep(0.2)
+        else:
+            raise TimeoutError('Store did not return HTTP 200 from /health before the deadline')
         with urllib.request.urlopen(WEB + '/apps/' + APP) as response:
             html = response.read().decode()
             assert 'Catalog Hello' in html and source_commit[:12] in html and 'Install with Flatpak' in html

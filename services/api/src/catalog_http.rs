@@ -223,7 +223,7 @@ async fn releases(
     json(
         &headers,
         &s.store
-            .releases(id, q.limit, q.offset)
+            .releases(id, q.channel, q.limit, q.offset)
             .await
             .map_err(ApiError::internal)?,
     )

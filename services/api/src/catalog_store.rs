@@ -243,6 +243,7 @@ impl CatalogStorage for Store {
     async fn releases(
         &self,
         id: String,
+        channel: RepositoryChannel,
         limit: usize,
         offset: usize,
     ) -> anyhow::Result<CatalogPage<PublicRelease>> {
@@ -250,8 +251,8 @@ impl CatalogStorage for Store {
             limit > 0 && limit <= 100 && offset <= 100_000,
             "Pagination bounds"
         );
-        self.run(move |db| {let total=db.query_row("SELECT count(*) FROM catalog_releases WHERE app_id=?1",[&id],|r|r.get::<_,i64>(0))? as u64;let rows=db.prepare("SELECT record FROM catalog_releases WHERE app_id=?1 ORDER BY published_at DESC,publication_id DESC LIMIT
-                 ?2 OFFSET ?3")?.query_map(params![id,limit as i64,offset as i64],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;let items=rows.into_iter().map(|r|serde_json::from_str(&r)).collect::<Result<Vec<_>,_>>()?;Ok(CatalogPage{items,total,limit,offset})}).await
+        self.run(move |db| {let total=db.query_row("SELECT count(*) FROM catalog_releases WHERE app_id=?1 AND channel=?2",params![id,channel.to_string()],|r|r.get::<_,i64>(0))? as u64;let rows=db.prepare("SELECT record FROM catalog_releases WHERE app_id=?1 AND channel=?2 ORDER BY published_at DESC,publication_id DESC LIMIT
+                 ?3 OFFSET ?4")?.query_map(params![id,channel.to_string(),limit as i64,offset as i64],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;let items=rows.into_iter().map(|r|serde_json::from_str(&r)).collect::<Result<Vec<_>,_>>()?;Ok(CatalogPage{items,total,limit,offset})}).await
     }
     async fn categories(&self) -> anyhow::Result<Vec<CatalogCategory>> {
         self.run(|db| Ok(db.prepare("SELECT category,count(*) FROM catalog_categories c JOIN catalog_apps a ON a.id=c.app_row WHERE
@@ -386,6 +387,131 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn release_history_filters_channel_before_pagination() {
+        let root = tempfile::tempdir().unwrap();
+        let s = Store::open(root.path()).unwrap();
+        let first = publication(&s, "org.example.Test", RepositoryChannel::Stable, "First").await;
+        let second = publication(&s, "org.example.Test", RepositoryChannel::Stable, "Second").await;
+        let beta = publication(&s, "org.example.Test", RepositoryChannel::Beta, "Beta").await;
+        let router = crate::catalog_http::router(crate::catalog_http::CatalogHttp {
+            store: s,
+            api_public_url: "https://api.example.com".into(),
+            repository: None,
+            page_size: 24,
+        });
+        for (query, total, offset, expected) in [
+            ("limit=1", 2, 0, Some(second.id)),
+            ("channel=stable&limit=1&offset=1", 2, 1, Some(first.id)),
+            ("channel=beta&limit=1", 1, 0, Some(beta.id)),
+            ("channel=beta&limit=1&offset=1", 1, 1, None),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/api/v1/catalog/apps/org.example.Test/releases?{query}"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let page: CatalogPage<PublicRelease> = serde_json::from_slice(&body).unwrap();
+            assert_eq!((page.total, page.limit, page.offset), (total, 1, offset));
+            assert_eq!(page.items.len(), usize::from(expected.is_some()));
+            if let Some(id) = expected {
+                assert_eq!(page.items[0].publication_id, id.to_string());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_failures_do_not_shutdown_the_worker() {
+        use crate::catalog_worker::CatalogWorker;
+        use librehub_publisher::repository::RepositoryConfig;
+        use std::time::{Duration, Instant};
+        use tokio_util::sync::CancellationToken;
+
+        for failure in ["record", "manifest", "missing"] {
+            let root = tempfile::tempdir().unwrap();
+            let s = Store::open(root.path()).unwrap();
+            let p = publication(&s, "org.example.Test", RepositoryChannel::Stable, "Test").await;
+            s.catalog_rebuild().await.unwrap();
+            let build_id = p.build_id;
+            let publication_id = p.id;
+            s.run(move |db| {
+                match failure {
+                    "record" => { db.execute("UPDATE builds SET record='invalid' WHERE id=?1", [build_id.to_string()])?; }
+                    "manifest" => { db.execute("UPDATE builds SET manifest='invalid' WHERE id=?1", [build_id.to_string()])?; }
+                    _ => { db.execute("UPDATE publishes SET record=json_set(record,'$.build_id',?2) WHERE id=?1", params![publication_id.to_string(), BuildId::new().to_string()])?; }
+                }
+                Ok(())
+            }).await.unwrap();
+            let shutdown = CancellationToken::new();
+            let worker = CatalogWorker::new(
+                s.clone(),
+                Some(RepositoryConfig {
+                    public_base_url: "https://repo.example.com".into(),
+                    public_key: vec![],
+                    fingerprint: "F".repeat(40),
+                    runtime_repo_url: "https://repo.example.com/runtime.flatpakrepo".into(),
+                }),
+                shutdown.clone(),
+            );
+            let started = Instant::now();
+            let task = tokio::spawn(worker.run());
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let state: Option<String> = s
+                        .run(move |db| {
+                            Ok(db
+                                .query_row(
+                                    "SELECT state FROM catalog_jobs WHERE publication_id=?1",
+                                    [publication_id.to_string()],
+                                    |row| row.get(0),
+                                )
+                                .optional()?)
+                        })
+                        .await
+                        .unwrap();
+                    if state.as_deref() == Some("failed") {
+                        break;
+                    }
+                    assert!(
+                        !task.is_finished(),
+                        "lookup failure escaped the supervisor: {failure}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            if failure != "missing" {
+                assert!(
+                    started.elapsed() >= Duration::from_secs(2),
+                    "lookup was not retried"
+                );
+            }
+            assert!(!shutdown.is_cancelled());
+            assert!(!task.is_finished());
+            assert_eq!(
+                s.publish_record(p.id).await.unwrap().unwrap().status,
+                PublishStatus::Succeeded
+            );
+            assert_eq!(s.apps(CatalogQuery::default()).await.unwrap().total, 1);
+            shutdown.cancel();
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn queued_failed_and_cancelled_never_index() {
         let root = tempfile::tempdir().unwrap();
         let s = Store::open(root.path()).unwrap();
@@ -434,7 +560,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            s.releases("org.example.Test".into(), 24, 0)
+            s.releases("org.example.Test".into(), RepositoryChannel::Stable, 24, 0)
                 .await
                 .unwrap()
                 .total,
@@ -493,10 +619,15 @@ mod tests {
             "Recovered"
         );
         assert_eq!(
-            s.releases("org.example.Corrupt".into(), 24, 0)
-                .await
-                .unwrap()
-                .total,
+            s.releases(
+                "org.example.Corrupt".into(),
+                RepositoryChannel::Stable,
+                24,
+                0
+            )
+            .await
+            .unwrap()
+            .total,
             1
         );
     }
@@ -610,7 +741,10 @@ mod tests {
         let first = publication(&s, "org.example.Test", RepositoryChannel::Stable, "Test").await;
         let second =
             publication(&s, "org.example.Test", RepositoryChannel::Stable, "Updated").await;
-        let releases = s.releases(first.app_id.clone(), 24, 0).await.unwrap();
+        let releases = s
+            .releases(first.app_id.clone(), RepositoryChannel::Stable, 24, 0)
+            .await
+            .unwrap();
         assert_eq!(releases.total, 2);
         assert_eq!(releases.items[0].publication_id, second.id.to_string());
         assert_eq!(s.categories().await.unwrap()[0].count, 1);
