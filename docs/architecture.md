@@ -1,6 +1,6 @@
 # LibreHub architecture
 
-The workspace has six Rust crates. `common` owns serializable domain types,
+The workspace has seven Rust crates. `common` owns serializable domain types,
 including UUID-backed IDs, architectures, UTC timestamps, manifests, state
 transitions, structured validation/build errors, logs and artifacts. Extensible
 Flatpak options remain JSON values at the manifest boundary; job state and service
@@ -102,3 +102,33 @@ webhook bytes → HMAC verification; untrusted Git → trusted restricted resolv
 untrusted snapshot → validator/hash/type/path checks → untrusted builder; untrusted
 bundle → trusted M2 artifact verifier/publisher → trusted flat-manager signing
 boundary. Secrets cross none of the Git/snapshot/builder/public repository edges.
+
+## M4 catalog and browser boundary
+
+```mermaid
+flowchart TD
+    A["M3 owned Git project"] --> B["M1 immutable build"]
+    B --> C["M2 signed stable publication"]
+    C --> D["Bounded catalog indexer"]
+    D --> E["Catalog DB and FTS5"]
+    E --> F["Public DTO API"]
+    F --> G["LibreHub web store"]
+    G --> H["Standard signed Flatpak installation"]
+```
+
+`services/catalog` owns public models, CatalogStorage abstraction, bounded
+AppStream/desktop extraction, normalization, URL classification and signed deployed
+permission extraction. The API's fourth supervisor polls the durable successful
+publication backlog into a capped SQLite catalog queue. Migration 004 adds app,
+release, category, job and search state without changing M1/M2/M3 records. Public
+routes are merged outside the private auth middleware and never serialize internal
+platform records. The web application uses only that versioned public API.
+
+Untrusted AppStream/Git project metadata, screenshots and descriptions → trusted
+bounded normalization/indexer → atomic last-good catalog/search transaction →
+explicit public DTOs → browser text escaping and validated links/assets. Signed
+repository state and operator configuration are trusted; no request Host constructs
+install/canonical URLs. Permissions come from the exact published signed checksum,
+source presentation metadata from the verified built tree tied to its pre-rewrite
+checksum. Catalog failure cannot roll back publication. See catalog.md, metadata.md,
+store.md and m4-verification.md for resource, restart and browser boundaries.

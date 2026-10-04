@@ -164,6 +164,34 @@ settings changes cannot undo an already claimed remote publication.
 Source event/project/token/delivery/audit limits bound admission/history. Aggregate
 storage retention and rate controls for public HTTP remain operator deployment
 requirements. These are infrastructure boundaries, not a claim of full hostile
-multi-tenant container security. M4 catalog work is explicitly excluded. Detailed
+multi-tenant container security. M4 adds the separate public catalog boundary below. Detailed
 configuration, limitations and regression evidence are in authentication.md,
 source-integration.md, webhooks.md and m3-verification.md.
+
+## M4 public catalog and store
+
+Developer project content, AppStream XML/descriptions, source repository content
+and remote screenshots are untrusted. Normalization/indexer, explicit DTO layer,
+operator URLs and signed repository verification form the trusted boundary. The
+browser receives escaped text only and classified links/assets. No raw HTML or
+Markdown, image proxy, arbitrary icon path, unsanitized source-link template or
+Host-derived install URL is accepted. XML DTDs/custom entities are refused; sizes,
+depth/nodes, text, categories, keywords, screenshots and permissions are bounded.
+Bundled icons serve PNG only with type/size/dimension validation and nosniff.
+
+Public catalog CORS/cache policy applies to separate read-only GET routes; all
+existing developer APIs still require their original scopes/ownership. Beta-only
+apps do not leak into normal stable lists. Public IDs are explicit app/project/
+publisher/build/publication provenance fields, never token IDs, secrets, audit or
+private internal records. Archival preserves installable releases and marks them
+inactive rather than silently deleting signed content.
+
+The frontend renders plain AppStream text, uses safe external link rel values,
+no-referrer, CSP with bounded detail-page screenshot origins, nosniff and framing
+protection. Next.js hydration uses escaped inline script payloads; CSP currently
+allows those inline scripts/styles. Direct external screenshots reveal user IP to
+image hosts and can change after indexing; DNS checks at indexing do not pin the
+browser's future DNS. No backend screenshot SSRF/proxy surface is introduced.
+
+Review catalog.md/metadata.md/store.md for exact policy/limits and
+m4-verification.md for XSS, URL, visibility, persistence and signed-install evidence.
