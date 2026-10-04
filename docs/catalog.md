@@ -53,7 +53,7 @@ Stop the API, preserve its data/signing environment, then run:
 ./target/debug/librehub-admin catalog rebuild
 ```
 
-This offline command rebuilds FTS from last-good app records and clears catalog job
+This offline command rebuilds FTS from readable last-good app records and clears catalog job
 states. Restart repopulates the bounded queue from publication history. It never
 changes builds, publications, checksums, signing or live repository refs. Retain
 source bundles/public repository objects to support reindexing. Previous catalog
@@ -113,3 +113,8 @@ configuration plus existing RepositoryConfig, never request Host. `/ready` inclu
 catalog database/search and running catalog worker and refuses full readiness when
 indexing is unavailable. Metadata work has a 300-second overall deadline, 60-second
 subprocess deadline and bounded output. Concurrency is deliberately one in M4.
+
+Unreadable derived app JSON is removed during rebuild and reconstructed from the
+successful publication backlog. Valid app records remain available. Publication
+and signing history are unchanged; physical SQLite corruption requires an operator
+database restore, rather than catalog reindexing.

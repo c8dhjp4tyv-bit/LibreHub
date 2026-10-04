@@ -100,7 +100,15 @@ impl Store {
                 .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
                 .collect::<Result<Vec<_>, _>>()?;
             for (row, raw) in rows {
-                index(&tx, row, &serde_json::from_str(&raw)?)?;
+                match serde_json::from_str::<Entry>(&raw) {
+                    Ok(entry) => index(&tx, row, &entry)?,
+                    Err(_) => {
+                        // Corrupt derived metadata cannot be last-known-good. Reconstruct it
+                        // from the durable publication backlog without touching signing history.
+                        tx.execute("DELETE FROM catalog_categories WHERE app_row=?1", [row])?;
+                        tx.execute("DELETE FROM catalog_apps WHERE id=?1", [row])?;
+                    }
+                }
             }
             tx.commit()?;
             Ok(())
@@ -427,6 +435,65 @@ mod tests {
         .unwrap();
         assert_eq!(
             s.releases("org.example.Test".into(), 24, 0)
+                .await
+                .unwrap()
+                .total,
+            1
+        );
+    }
+    #[tokio::test]
+    async fn rebuild_recovers_corrupt_derived_metadata_and_preserves_good_apps() {
+        let root = tempfile::tempdir().unwrap();
+        let s = Store::open(root.path()).unwrap();
+        let p = publication(
+            &s,
+            "org.example.Corrupt",
+            RepositoryChannel::Stable,
+            "Corrupt",
+        )
+        .await;
+        publication(&s, "org.example.Good", RepositoryChannel::Stable, "Good").await;
+        s.run(|db| {
+            db.execute(
+                "UPDATE catalog_apps SET record='broken-json' WHERE app_id='org.example.Corrupt'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        s.catalog_rebuild().await.unwrap();
+        let apps = s.apps(CatalogQuery::default()).await.unwrap();
+        assert_eq!(apps.total, 1);
+        assert_eq!(apps.items[0].app_id, "org.example.Good");
+        assert_eq!(
+            serde_json::to_value(s.publish_record(p.id).await.unwrap().unwrap()).unwrap(),
+            serde_json::to_value(&p).unwrap()
+        );
+        assert!(s.catalog_claim().await.unwrap().is_some());
+        let mut metadata = librehub_catalog::metadata::fallback(&p.app_id);
+        metadata.name = "Recovered".into();
+        s.catalog_commit(
+            p,
+            librehub_catalog::extract::Extracted {
+                metadata,
+                permissions: Default::default(),
+                icon_png: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.app("org.example.Corrupt".into(), RepositoryChannel::Stable)
+                .await
+                .unwrap()
+                .unwrap()
+                .card
+                .name,
+            "Recovered"
+        );
+        assert_eq!(
+            s.releases("org.example.Corrupt".into(), 24, 0)
                 .await
                 .unwrap()
                 .total,
