@@ -16,7 +16,8 @@ CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner);
 CREATE TABLE IF NOT EXISTS source_events (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
  build_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, record TEXT NOT NULL,
- auto_publish_state TEXT NOT NULL DEFAULT 'pending'
+ auto_publish_state TEXT NOT NULL DEFAULT 'pending',
+ auto_publish_id TEXT REFERENCES publishes(id)
 );
 CREATE INDEX IF NOT EXISTS source_events_status ON source_events(status);
 CREATE TABLE IF NOT EXISTS webhook_deliveries (

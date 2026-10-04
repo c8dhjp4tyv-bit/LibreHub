@@ -84,6 +84,9 @@ fn failure(error: anyhow::Error) -> ApiError {
         let code = error.0;
         let status = match code {
             "project_not_found" => StatusCode::NOT_FOUND,
+            "invalid_request" => StatusCode::BAD_REQUEST,
+            "developer_disabled" => StatusCode::FORBIDDEN,
+            "token_limit_exceeded" => StatusCode::TOO_MANY_REQUESTS,
             "project_disabled" | "project_slug_taken" | "project_update_conflict" => {
                 StatusCode::CONFLICT
             }
@@ -583,7 +586,7 @@ async fn create_token(
             "Cannot delegate scopes absent from this token",
         ));
     }
-    if request.name.is_empty()
+    if request.name.trim().is_empty()
         || request.name.len() > 120
         || request.scopes.is_empty()
         || request.scopes.len() > 10
@@ -798,4 +801,23 @@ async fn webhook(
             .into_response(),
         Admission::Ignored => (StatusCode::OK, Json(json!({"status":"ignored"}))).into_response(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_errors_map_to_client_statuses() {
+        for (code, status) in [
+            ("invalid_request", StatusCode::BAD_REQUEST),
+            ("developer_disabled", StatusCode::FORBIDDEN),
+            ("token_limit_exceeded", StatusCode::TOO_MANY_REQUESTS),
+        ] {
+            assert_eq!(
+                failure(PlatformError(code).into()).into_response().status(),
+                status
+            );
+        }
+    }
 }

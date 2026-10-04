@@ -369,8 +369,8 @@ pub(crate) fn auto_policy_valid(db: &Connection, source: &SourceEvent) -> anyhow
             && (!p.settings.auto_publish_tags_only || source.trigger == TriggerType::WebhookTag)
     }))
 }
-pub(crate) fn auto_publish_valid(db: &Connection, build: BuildId) -> anyhow::Result<bool> {
-    let raw:Option<String>=db.query_row("SELECT e.record FROM source_events e WHERE e.build_id=?1 AND e.auto_publish_state='queued'",[build.to_string()],|r|r.get(0)).optional()?;
+pub(crate) fn auto_publish_valid(db: &Connection, publication: PublishId) -> anyhow::Result<bool> {
+    let raw:Option<String>=db.query_row("SELECT e.record FROM source_events e WHERE e.auto_publish_id=?1 AND e.auto_publish_state='queued'",[publication.to_string()],|r|r.get(0)).optional()?;
     match raw {
         Some(raw) => auto_policy_valid(db, &serde_json::from_str(&raw)?),
         None => Ok(true),

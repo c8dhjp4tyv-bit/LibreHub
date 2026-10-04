@@ -299,7 +299,15 @@ impl SourceWorker {
                     publishing.wake.notify_one();
                 }
                 Ok(None) => {}
-                Err(error) if error.is::<crate::publication_store::AdmissionError>() => {}
+                Err(error) if error.is::<crate::publication_store::AdmissionError>() => {
+                    if !matches!(
+                        error.downcast_ref::<crate::publication_store::AdmissionError>(),
+                        Some(crate::publication_store::AdmissionError::Full)
+                    ) {
+                        tracing::warn!(project_id=%event.project_id,build_id=%event.build_id,%error,"Automatic publication admission failed");
+                        store.finish_auto_publish(event.id, "failed").await?;
+                    }
+                }
                 Err(error) => return Err(error),
             }
         }

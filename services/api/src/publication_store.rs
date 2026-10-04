@@ -25,7 +25,7 @@ impl Store {
     ) -> anyhow::Result<PublishRecord> {
         self.run(move |db| {
             let tx = db.transaction()?;
-            let record = enqueue(&tx, id, channel)?;
+            let (record, _) = enqueue(&tx, id, channel)?;
             tx.commit()?;
             Ok(record)
         })
@@ -57,10 +57,10 @@ impl Store {
                 tx.commit()?;
                 return Ok(None);
             }
-            let record = enqueue(&tx, source.build_id, channel)?;
+            let (record, created) = enqueue(&tx, source.build_id, channel)?;
             tx.execute(
-                "UPDATE source_events SET auto_publish_state='queued' WHERE id=?1",
-                [event_id.to_string()],
+                "UPDATE source_events SET auto_publish_state='queued',auto_publish_id=?2 WHERE id=?1",
+                params![event_id.to_string(), created.then(|| record.id.to_string())],
             )?;
             crate::platform_store::audit(
                 &tx,
@@ -135,7 +135,7 @@ impl Store {
             if record.status != PublishStatus::Queued {
                 return Ok(None);
             }
-            if !crate::platform_store::auto_publish_valid(&tx, record.build_id)? {
+            if !crate::platform_store::auto_publish_valid(&tx, record.id)? {
                 record.status = PublishStatus::Cancelled;
                 record.updated_at = Utc::now();
                 write(&tx, &record)?;
@@ -203,11 +203,12 @@ fn write(db: &Connection, record: &PublishRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Returns the publication and whether it was created by this admission.
 fn enqueue(
     db: &Connection,
     id: BuildId,
     channel: RepositoryChannel,
-) -> anyhow::Result<PublishRecord> {
+) -> anyhow::Result<(PublishRecord, bool)> {
     let existing: Option<String> = db
         .query_row(
             "SELECT record FROM publishes WHERE build_id=?1 AND channel=?2",
@@ -216,7 +217,7 @@ fn enqueue(
         )
         .optional()?;
     if let Some(existing) = existing {
-        return Ok(serde_json::from_str(&existing)?);
+        return Ok((serde_json::from_str(&existing)?, false));
     }
     let build: Option<String> = db
         .query_row(
@@ -293,5 +294,5 @@ fn enqueue(
         ],
     )?;
 
-    Ok(record)
+    Ok((record, true))
 }

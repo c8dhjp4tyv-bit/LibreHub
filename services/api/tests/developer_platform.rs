@@ -772,8 +772,7 @@ async fn additive_migration_preserves_m2_records_and_old_json_without_provenance
         2
     );
 }
-#[tokio::test]
-async fn queued_automatic_publication_is_cancelled_after_policy_change() {
+async fn automatic_publication_fixture() -> (Harness, ProjectId, SourceEvent) {
     let h = Harness::new(false).await;
     let (id, _) = h.project().await;
     request(
@@ -819,6 +818,17 @@ async fn queued_automatic_publication_is_cancelled_after_policy_change() {
         )
         .await
         .unwrap();
+    (h, id, event)
+}
+
+#[tokio::test]
+async fn queued_automatic_publication_is_cancelled_after_policy_change() {
+    let (h, id, event) = automatic_publication_fixture().await;
+    let manual = h
+        .store
+        .enqueue_publish(event.build_id, RepositoryChannel::Stable)
+        .await
+        .unwrap();
     let publication = h
         .store
         .enqueue_auto_publish(event.id, RepositoryChannel::Beta)
@@ -848,6 +858,65 @@ async fn queued_automatic_publication_is_cancelled_after_policy_change() {
             .unwrap()
             .status,
         PublishStatus::Cancelled
+    );
+    assert_eq!(
+        h.store
+            .claim_publication(manual.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        PublishStatus::Preparing
+    );
+}
+
+#[tokio::test]
+async fn automatic_admission_does_not_adopt_existing_manual_publication() {
+    let (h, id, event) = automatic_publication_fixture().await;
+    let manual = h
+        .store
+        .enqueue_publish(event.build_id, RepositoryChannel::Beta)
+        .await
+        .unwrap();
+    let automatic = h
+        .store
+        .enqueue_auto_publish(event.id, RepositoryChannel::Beta)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automatic.id, manual.id);
+    assert!(
+        h.store
+            .enqueue_auto_publish(event.id, RepositoryChannel::Beta)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let db = rusqlite::Connection::open(h.root.path().join("builds.sqlite3")).unwrap();
+    let associated: Option<String> = db
+        .query_row(
+            "SELECT auto_publish_id FROM source_events WHERE id=?1",
+            [event.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(associated.is_none());
+    request(
+        &h.app,
+        "PATCH",
+        &format!("/api/v1/projects/{id}"),
+        Some(&h.token),
+        Some(json!({"auto_publish_channel":"none"})),
+    )
+    .await;
+    assert_eq!(
+        h.store
+            .claim_publication(manual.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        PublishStatus::Preparing
     );
 }
 #[tokio::test]
@@ -931,4 +1000,228 @@ async fn developer_cannot_publish_over_another_developers_application_id() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("another developer"));
+}
+
+#[tokio::test]
+async fn invalid_token_names_and_token_quota_are_client_errors() {
+    let h = Harness::new(false).await;
+    for name in ["", " \t\n", "\u{2003}"] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/api/v1/tokens",
+            Some(&h.token),
+            Some(json!({"name":name,"scopes":["projects:read"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_request");
+        let error = h
+            .store
+            .issue_token(h.owner, name.into(), vec![Scope::ProjectsRead])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<librehub_api::platform_store::PlatformError>()
+                .unwrap()
+                .0,
+            "invalid_request"
+        );
+    }
+    for _ in 1..32 {
+        h.store
+            .issue_token(h.owner, "quota".into(), vec![Scope::ProjectsRead])
+            .await
+            .unwrap();
+    }
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/api/v1/tokens",
+        Some(&h.token),
+        Some(json!({"name":"overflow","scopes":["projects:read"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["code"], "token_limit_exceeded");
+    let token = h.store.tokens(h.owner, 1, 0).await.unwrap()[0].id;
+    h.store.revoke_token(h.owner, token).await.unwrap();
+    assert_eq!(
+        request(
+            &h.app,
+            "POST",
+            "/api/v1/tokens",
+            Some(&h.token),
+            Some(json!({"name":"replacement","scopes":["projects:read"]}))
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let db = rusqlite::Connection::open(h.root.path().join("builds.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE developers SET status='disabled' WHERE id=?1",
+        [h.owner.to_string()],
+    )
+    .unwrap();
+    let error = h
+        .store
+        .issue_token(h.owner, "disabled".into(), vec![Scope::ProjectsRead])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<librehub_api::platform_store::PlatformError>()
+            .unwrap()
+            .0,
+        "developer_disabled"
+    );
+}
+
+#[tokio::test]
+async fn existing_m3_database_gains_automatic_publication_id_on_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let owner = store.create_developer("preserved".into()).await.unwrap().id;
+    drop(store);
+    let db = rusqlite::Connection::open(root.path().join("builds.sqlite3")).unwrap();
+    db.execute_batch("ALTER TABLE source_events DROP COLUMN auto_publish_id;")
+        .unwrap();
+    drop(Store::open(root.path()).unwrap());
+    let store = Store::open(root.path()).unwrap();
+    store
+        .issue_token(owner, "after migration".into(), vec![Scope::ProjectsRead])
+        .await
+        .unwrap();
+    db.prepare("SELECT auto_publish_id FROM source_events")
+        .unwrap();
+}
+
+// Stop after one admission pass so pending/retry state can be inspected deterministically.
+struct AdmissionPublisher(tokio_util::sync::CancellationToken);
+#[async_trait]
+impl librehub_publisher::Publisher for AdmissionPublisher {
+    async fn eligible(
+        &self,
+        _: BuildRecord,
+        _: FlatpakManifest,
+        _: std::path::PathBuf,
+    ) -> Result<(), librehub_publisher::PublishError> {
+        self.0.cancel();
+        Ok(())
+    }
+    async fn publish(
+        &self,
+        _: librehub_publisher::PublishJob,
+        _: &dyn librehub_publisher::PublishJournal,
+    ) -> Result<PublishResult, librehub_publisher::PublishError> {
+        unreachable!("Only admission is exercised")
+    }
+    async fn ready(&self) -> bool {
+        true
+    }
+    async fn repository_ready(&self) -> bool {
+        true
+    }
+}
+
+async fn run_automatic_admission(h: &Harness) -> anyhow::Result<()> {
+    let supervisor = Supervisor::new(h.store.clone());
+    let publishing = librehub_api::publishing::Publishing::new(
+        h.store.clone(),
+        Arc::new(AdmissionPublisher(supervisor.shutdown.clone())),
+        librehub_publisher::repository::RepositoryConfig {
+            public_base_url: "http://localhost:8090".into(),
+            public_key: b"public".to_vec(),
+            fingerprint: "A".repeat(40),
+            runtime_repo_url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+        },
+        1,
+        supervisor.shutdown.clone(),
+    )
+    .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        SourceWorker::new(supervisor, h.provider.clone(), Some(publishing)).run(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn automatic_admission_retries_only_full_and_propagates_storage_errors() {
+    for case in ["owned", "ineligible", "full", "storage"] {
+        let (h, _, event) = automatic_publication_fixture().await;
+        let db = rusqlite::Connection::open(h.root.path().join("builds.sqlite3")).unwrap();
+        match case {
+            "owned" => {
+                let other = h
+                    .store
+                    .authenticate(Secret(h.other_token.clone()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                db.execute("INSERT INTO application_owners(app_id,developer_id) VALUES('org.librehub.Hello',?1)", [other.developer_id.to_string()]).unwrap();
+            }
+            "ineligible" => {
+                db.execute("UPDATE builds SET record=json_set(record,'$.result.artifacts',json('[]')) WHERE id=?1", [event.build_id.to_string()]).unwrap();
+            }
+            "full" => {
+                // Distinct synthetic builds/publications fill the durable queue.
+                let record = h
+                    .store
+                    .enqueue_publish(event.build_id, RepositoryChannel::Stable)
+                    .await
+                    .unwrap();
+                for _ in 1..64 {
+                    let build = BuildId::new();
+                    db.execute("INSERT INTO builds(id,status,record,manifest) SELECT ?1,status,record,manifest FROM builds WHERE id=?2", rusqlite::params![build.to_string(), event.build_id.to_string()]).unwrap();
+                    let mut queued = record.clone();
+                    queued.id = PublishId::new();
+                    queued.build_id = build;
+                    db.execute("INSERT INTO publishes(id,build_id,channel,status,record) VALUES(?1,?2,'stable','queued',?3)", rusqlite::params![queued.id.to_string(), build.to_string(), serde_json::to_string(&queued).unwrap()]).unwrap();
+                }
+            }
+            "storage" => {
+                db.execute_batch("CREATE TRIGGER reject_publication BEFORE INSERT ON publishes BEGIN SELECT RAISE(ABORT,'storage failure'); END;").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let result = run_automatic_admission(&h).await;
+        assert_eq!(result.is_err(), case == "storage", "{case}: {result:?}");
+        let state: String = db
+            .query_row(
+                "SELECT auto_publish_state FROM source_events WHERE id=?1",
+                [event.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            if matches!(case, "full" | "storage") {
+                "pending"
+            } else {
+                "failed"
+            },
+            "{case}"
+        );
+        assert_eq!(
+            h.store.auto_publish_candidates().await.unwrap().len(),
+            usize::from(matches!(case, "full" | "storage"))
+        );
+        if case == "full" {
+            db.execute("UPDATE publishes SET status='cancelled'", [])
+                .unwrap();
+            run_automatic_admission(&h).await.unwrap();
+            let state: String = db
+                .query_row(
+                    "SELECT auto_publish_state FROM source_events WHERE id=?1",
+                    [event.id.to_string()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(state, "queued");
+        }
+    }
 }

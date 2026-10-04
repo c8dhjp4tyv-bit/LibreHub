@@ -1,5 +1,5 @@
 //! One bearer parser and reusable ownership checks. Tokens never enter diagnostics.
-use crate::{http::ApiError, store::Store};
+use crate::{http::ApiError, platform_store::PlatformError, store::Store};
 use axum::{
     extract::{Request, State},
     http::{StatusCode, header},
@@ -180,15 +180,15 @@ impl Store {
                 && name.len() <= 120
                 && scopes.len() <= 11
                 && !scopes.is_empty(),
-            "Invalid token name/scopes"
+            PlatformError("invalid_request")
         );
         let id = TokenId::new();
         let raw = Secret(format!("librehub_{id}_{}", random_secret()?.0));
         let hash = Sha256::digest(raw.0.as_bytes()).to_vec();
         let record=self.run(move|db|{
             let tx=db.transaction()?;
-            let active:bool=tx.query_row("SELECT status='active' FROM developers WHERE id=?1",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(active,"Developer is disabled");
-            let count:i64=tx.query_row("SELECT count(*) FROM api_tokens WHERE developer_id=?1 AND json_extract(record,'$.revoked_at') IS NULL",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(count<32,"Token quota exceeded");
+            let active:bool=tx.query_row("SELECT status='active' FROM developers WHERE id=?1",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(active,PlatformError("developer_disabled"));
+            let count:i64=tx.query_row("SELECT count(*) FROM api_tokens WHERE developer_id=?1 AND json_extract(record,'$.revoked_at') IS NULL",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(count<32,PlatformError("token_limit_exceeded"));
             let record=ApiToken{id,developer_id:developer,name,scopes,created_at:chrono::Utc::now(),last_used_at:None,revoked_at:None};
             tx.execute("INSERT INTO api_tokens(id,developer_id,hash,record) VALUES(?1,?2,?3,?4)",params![id.to_string(),developer.to_string(),hash,serde_json::to_string(&record)?])?;
             crate::platform_store::audit(&tx,developer,"token.created",None,&id.to_string(),"succeeded")?;tx.commit()?;Ok(record)
