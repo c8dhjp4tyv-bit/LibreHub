@@ -80,6 +80,7 @@ pub async fn extract(
     let repo = format!("--repo={}", prepared.path.display());
     let app_id = &publication.app_id;
     let mut m = metadata::fallback(app_id);
+    let mut has_appstream = false;
     // Only canonical app-ID paths, never icon/path strings supplied by metadata.
     for path in [
         format!("/files/share/metainfo/{app_id}.metainfo.xml"),
@@ -100,10 +101,11 @@ pub async fn extract(
         {
             let bytes = cat(&repo, &prepared.commit, &path, metadata::MAX_XML).await?;
             m = metadata::appstream(std::str::from_utf8(&bytes)?, app_id)?;
+            has_appstream = true;
             break;
         }
     }
-    if m.name == *app_id
+    if !has_appstream
         && let Ok(bytes) = cat(
             &repo,
             &prepared.commit,

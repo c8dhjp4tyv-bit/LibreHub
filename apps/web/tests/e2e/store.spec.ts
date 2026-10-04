@@ -35,6 +35,14 @@ test("discover a real published app and download its signed repository reference
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe(`${appId}.flatpakref`);
   await page.keyboard.press("Tab");
+  const screenshot = page.getByRole("img", { name: "Acceptance image" });
+  await screenshot.scrollIntoViewIfNeeded();
+  await expect
+    .poll(
+      () => screenshot.evaluate((image) => (image as HTMLImageElement).naturalWidth),
+      { timeout: 20000 },
+    )
+    .toBeGreaterThan(0);
   await page.screenshot({
     path: "../../data/m4-store-mobile.png",
     fullPage: true,

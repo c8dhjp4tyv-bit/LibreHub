@@ -15,6 +15,9 @@ only canonical paths in that built tree:
 3. `/files/share/applications/<app-id>.desktop` (fallback)
 4. Flatpak app ID fallback when standard presentation metadata is absent.
 
+Desktop fallback is used only when AppStream is absent; an app-ID display name
+does not discard an otherwise valid AppStream record.
+
 An existing malformed/oversized AppStream file fails indexing instead of silently
 making up metadata. The extracted component ID must match the app ID. Root-level
 component/application and components container forms are supported. The default
