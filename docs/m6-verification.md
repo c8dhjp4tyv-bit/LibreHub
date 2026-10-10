@@ -33,11 +33,12 @@ python3 scripts/test-supply-chain.py
 LIBREHUB_M6_HARDENED=1 python3 scripts/test-supply-chain.py
 ```
 
-Normal Docker CI attests the compatibility environment honestly and uses audit
-mode; it does not prove hardened-worker execution. Hardened execution must be
-validated separately, and enforcement rejects compatibility evidence. The final
-verification report records actual results; no fixture/mock is accepted as real
-Flatpak, repository, install, or hardened isolation evidence.
+CI first attests Docker compatibility in audit mode, then runs the actual
+rootless Podman/seccomp profile and repeats the full pipeline in enforcement
+mode. The tested engine reports AppArmor unavailable; AppArmor enforcement and
+a VM boundary are not claimed. Fedora SELinux 2.251.0 fails closed as documented
+in build-isolation.md. No fixture/mock substitutes for Flatpak, signing, install
+or operational hardened execution evidence.
 
 ## Recovery and operational limits
 

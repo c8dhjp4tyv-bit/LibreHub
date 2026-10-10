@@ -97,3 +97,85 @@ async fn builds_hello_under_hardened_rootless_podman() {
     assert_eq!(result.artifacts.len(), 1);
     executor.cleanup(id).await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires the supported rootless hardened platform; real cancel/restart cleanup"]
+async fn hardened_cancellation_and_abandoned_worker_cleanup() {
+    for crash in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let id = BuildId::new();
+        let mut manifest = librehub_validator::validate(
+            include_str!("../../../examples/org.librehub.Hello.json"),
+            ManifestFormat::Json,
+        )
+        .unwrap();
+        manifest.modules[0].options.insert(
+            "build-commands".into(),
+            serde_json::json!(["touch /app/m6-running && sleep 120"]),
+        );
+        let executor = Arc::new(
+            DockerExecutor::new(DockerConfig {
+                binary: "podman".into(),
+                image: std::env::var("LIBREHUB_WORKER_IMAGE")
+                    .unwrap_or_else(|_| "librehub-worker:m1".into()),
+                isolation: IsolationPolicy::Hardened,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let exec = executor.clone();
+        let task = tokio::spawn(async move {
+            exec.execute(
+                BuildJob {
+                    id,
+                    manifest,
+                    architecture: Architecture::native(),
+                    data_dir: dir.path().into(),
+                    source_snapshot: None,
+                },
+                Arc::new(Console),
+                token,
+            )
+            .await
+        });
+        let name = format!("librehub-{id}");
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                let status = tokio::process::Command::new("podman")
+                    .args(["exec", &name, "test", "-f", "/work/build/files/m6-running"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await
+                    .unwrap();
+                if status.success() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if crash {
+            task.abort();
+            let _ = task.await;
+            executor.cleanup(id).await.unwrap();
+        } else {
+            cancel.cancel();
+            assert!(matches!(task.await.unwrap(), Err(ExecutorError::Cancelled)));
+        }
+        let status = tokio::process::Command::new("podman")
+            .args(["container", "inspect", &name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(
+            !status.success(),
+            "A cancelled or abandoned hardened worker survived cleanup"
+        );
+    }
+}

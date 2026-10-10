@@ -7,7 +7,7 @@ export function BuildProvenance({ release, evidence }: { release: Release; evide
     inconclusive: "Rebuild inconclusive", unsupported: "Rebuild unsupported", not_checked: "Rebuild not checked",
   };
   const verified = evidence?.status === "verified" && evidence.verification.verified;
-  return <section aria-label="Build provenance">
+  return <section className="supply-chain-evidence" aria-label="Build provenance">
     <h2>Build provenance</h2>
     <p>{verified ? "Provenance verified" : evidence?.status === "failed" ? "Attestation verification failed" : "Attestation unavailable"}</p>
     {evidence?.status === "legacy_unattested" && <p>This historical release has no build-time attestation.</p>}

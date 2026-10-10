@@ -47,20 +47,21 @@ LIBREHUB_DOCKER=podman cargo test -p librehub-builder --test flatpak \
   builds_hello_under_hardened_rootless_podman -- --ignored --nocapture
 ```
 
-Normal M1 Docker CI explicitly runs its original compatibility build. It does not
-prove this platform-specific hardened profile or a VM isolation boundary. Policy
-unit tests always run. See m6-verification.md for the actual observed outcome.
+Normal CI runs the original M1 Docker compatibility build and separate real
+rootless Podman acceptance. Neither demonstrates a VM boundary. Policy unit
+tests always run. See m6-verification.md for the actual observed outcome.
 
-## LSM support
+## LSM support and observed platform limits
 
-On AppArmor hosts, load `infra/security/librehub-bubblewrap.apparmor` with the
-operator's `apparmor_parser -r` before starting hardened jobs. The profile permits
-proc/tmpfs/devpts and sandbox bind/remount/pivot operations, retaining write denies
-for kernel interfaces. The executor requires its exact profile name and verifies
-`(enforce)` before copying source. It never requests AppArmor unconfined mode.
-On SELinux hosts it selects and verifies the maintained `container_userns_t` domain,
-keeping MCS separation. Fedora container-selinux 2.251.0 still denies nsfs remount
-required by Flatpak; that combination currently fails closed. No policy boolean,
-global LSM disabling, privileged mode or automatic downgrade is used.
-The profile/domain names are recorded in provenance. CI additionally runs the
-real rootless AppArmor build and the full pipeline in enforcement mode.
+The tested Ubuntu 24.04 rootless Podman reports AppArmor unavailable. The supported
+profile's required protections are rootless user namespaces, retained OCI seccomp,
+no-new-privileges, private PID/IPC/UTS/network namespaces, read-only image storage,
+bounded tmpfs and verified cgroup limits. It does not claim AppArmor enforcement.
+An engine reporting AppArmor active is rejected until a compatible enforcing
+profile is proven. There is no AppArmor-unconfined fallback.
+On SELinux hosts the executor selects/verifies maintained `container_userns_t`,
+preserving MCS labeling. Fedora container-selinux 2.251.0 denies the nsfs remount
+needed by Flatpak, so that combination currently fails closed. No LSM boolean,
+label disabling, privileged mode or automatic downgrade is used. The selected
+SELinux type is recorded when applicable. CI runs actual rootless/seccomp builds,
+cancellation and abandoned-worker cleanup and the full pipeline in enforcement.

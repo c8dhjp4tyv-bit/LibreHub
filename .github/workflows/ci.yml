@@ -151,10 +151,9 @@ jobs:
           name: supply-chain-evidence-${{ github.sha }}
           path: data/m6-proof/
           retention-days: 7
-      - name: Load the explicit nested-bubblewrap AppArmor profile and rootless worker image
+      - name: Prepare the rootless Podman worker and delegated cgroups
         run: |
-          sudo apt-get update && sudo apt-get install -y podman apparmor
-          sudo apparmor_parser -r infra/security/librehub-bubblewrap.apparmor
+          sudo apt-get update && sudo apt-get install -y podman
           sudo loginctl enable-linger "$(id -un)"
           docker save librehub-worker:m1 | podman load
       - name: Real hardened rootless worker and enforced attested publication acceptance
@@ -163,6 +162,7 @@ jobs:
           export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
           . data/dev/publisher.env
           LIBREHUB_DOCKER=podman cargo test -p librehub-builder --test flatpak builds_hello_under_hardened_rootless_podman -- --ignored --nocapture
+          LIBREHUB_DOCKER=podman cargo test -p librehub-builder --test flatpak hardened_cancellation_and_abandoned_worker_cleanup -- --ignored --nocapture
           LIBREHUB_M6_HARDENED=1 python3 scripts/test-supply-chain.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

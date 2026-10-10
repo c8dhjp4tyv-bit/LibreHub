@@ -138,13 +138,14 @@ impl DockerExecutor {
     async fn environment(&self, job: &crate::BuildJob) -> anyhow::Result<BuildEnvironmentIdentity> {
         let podman = self.config.binary.file_name().and_then(|n| n.to_str()) == Some("podman");
         let mut selinux_type = None;
-        let mut apparmor_profile = None;
         if self.config.isolation == IsolationPolicy::Hardened {
             let info: serde_json::Value =
                 serde_json::from_str(&self.metadata(&["info", "--format=json"]).await?)?;
             let host = &info["host"];
             if host["security"]["apparmorEnabled"] == true {
-                apparmor_profile = Some("librehub-m6-bubblewrap".to_owned());
+                bail!(
+                    "An operational nested-bubblewrap AppArmor profile is not available for this executor"
+                );
             }
             // Maintained container-selinux domain for nested user namespaces;
             // preserve SELinux/MCS rather than disabling labeling.
@@ -210,7 +211,6 @@ impl DockerExecutor {
             network: self.config.network.clone(),
             source_date_epoch: Some(1),
             selinux_type,
-            apparmor_profile,
             writable_bytes: if self.config.isolation == IsolationPolicy::Hardened {
                 self.config.writable_bytes
             } else {
@@ -366,9 +366,6 @@ impl DockerExecutor {
             if let Some(label) = &environment.selinux_type {
                 args.insert(image_index, format!("--security-opt=label=type:{label}"));
             }
-            if let Some(profile) = &environment.apparmor_profile {
-                args.insert(image_index, format!("--security-opt=apparmor={profile}"));
-            }
             args.insert(image_index, "--read-only".into());
             args.insert(image_index, "--pid=private".into());
             args.insert(image_index, "--ipc=private".into());
@@ -434,21 +431,8 @@ impl DockerExecutor {
             {
                 bail_executor("Required nested-user-namespace SELinux domain unavailable")?;
             }
-            if let Some(profile) = &environment.apparmor_profile
-                && spec["process"]["apparmorProfile"].as_str() != Some(profile.as_str())
-            {
-                bail_executor("Required AppArmor profile unavailable")?;
-            }
             self.run(&["start".into(), name.clone()], logs.clone(), cancel)
                 .await?;
-            if let Some(profile) = &environment.apparmor_profile {
-                let label = self
-                    .metadata(&["exec", &name, "/bin/cat", "/proc/self/attr/current"])
-                    .await?;
-                if label != format!("{profile} (enforce)") {
-                    bail_executor("AppArmor profile is not enforcing")?;
-                }
-            }
         }
         self.run(
             &[
