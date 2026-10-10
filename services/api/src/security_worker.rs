@@ -220,10 +220,22 @@ impl SecurityWorker {
             .as_ref()
             .map(|p| p.revision.commit.as_str());
 
+        // Application version is distinct from the SDK/runtime branch.
+        let app_version = build
+            .provenance
+            .as_ref()
+            .map(|p| {
+                p.revision
+                    .source_ref
+                    .strip_prefix("refs/tags/")
+                    .unwrap_or(&p.revision.commit)
+                    .to_owned()
+            })
+            .unwrap_or_else(|| publication.id.to_string());
         let sbom_input = SbomInput {
             publication_id: &publication.id,
             app_id: &publication.app_id,
-            version: &manifest.runtime_version,
+            version: &app_version,
             ostree_checksum: &checksum,
             source_commit,
             license: None,

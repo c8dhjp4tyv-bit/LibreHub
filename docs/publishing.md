@@ -181,3 +181,9 @@ LIBREHUB_API_PUBLIC_URL and LIBREHUB_WEB_PUBLIC_URL for real public origins. Off
 catalog rebuild never changes signed repository state. See catalog.md, store.md,
 metadata.md and m4-verification.md for the full publication → index → browser →
 normal client flow, resource limits and executable acceptance evidence.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

@@ -213,3 +213,19 @@ export function commitLink(
     return null;
   }
 }
+
+export interface SupplyChainEvidence {
+  status: "pending" | "verified" | "failed" | "legacy_unattested";
+  verification: { verified: boolean; code: string; key_id: string | null };
+  reproducibility: string;
+  build: {
+    subject: { name: string; digest: { sha256: string } }[];
+    predicate: {
+      buildDefinition: {
+        externalParameters: { source: { revision: { repository: string; commit: string } } };
+        internalParameters: { imageConfigDigest: string; isolation: string };
+      };
+      runDetails: { builder: { id: string }; metadata: { finishedOn: string } };
+    };
+  } | null;
+}

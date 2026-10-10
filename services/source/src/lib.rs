@@ -868,6 +868,50 @@ fn check_local_membership(modules: &[Module], files: &BTreeMap<String, Vec<u8>>)
     Ok(())
 }
 
+/// Attestor-side verification of the retained immutable snapshot and selected manifest.
+/// Re-derive normalized build input; the stored build manifest alone is not evidence.
+pub fn verify_manifest_snapshot(
+    root: &Path,
+    id: BuildId,
+    provenance: &librehub_common::BuildProvenance,
+    expected: &FlatpakManifest,
+) -> Result<String> {
+    let path = root.join("sources").join(format!("{id}.tar"));
+    let meta = std::fs::symlink_metadata(&path).map_err(storage)?;
+    if !meta.is_file()
+        || meta.len() != provenance.snapshot.size_bytes
+        || meta.len() > MAX_SNAPSHOT_BYTES
+    {
+        return Err(SourceError::new("source_snapshot_integrity"));
+    }
+    let bytes = std::fs::read(path).map_err(storage)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != provenance.snapshot.sha256 {
+        return Err(SourceError::new("source_snapshot_integrity"));
+    }
+    let (files, executable) = read_archive(&bytes)?;
+    if files.len() as u64 != provenance.snapshot.file_count || !safe_path(&provenance.manifest_path)
+    {
+        return Err(SourceError::new("source_snapshot_integrity"));
+    }
+    let manifest = files
+        .get(&provenance.manifest_path)
+        .ok_or_else(|| SourceError::new("manifest_not_found"))?;
+    let manifest_digest = format!("{:x}", Sha256::digest(manifest));
+    let fetched = FetchedSource {
+        workspace: tempfile::tempdir().map_err(storage)?,
+        files,
+        executable,
+    };
+    let prepared =
+        GitSource::default().discover_manifest(&fetched, Some(&provenance.manifest_path))?;
+    if serde_json::to_value(&prepared.manifest).map_err(storage)?
+        != serde_json::to_value(expected).map_err(storage)?
+    {
+        return Err(SourceError::new("manifest_integrity"));
+    }
+    Ok(manifest_digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

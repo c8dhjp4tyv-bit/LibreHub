@@ -55,3 +55,43 @@ async fn builds_hello_into_a_real_bundle() {
     );
     executor.cleanup(id).await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires rootless Podman/cgroup-v2/seccomp and the worker image; operational hardening acceptance"]
+async fn builds_hello_under_hardened_rootless_podman() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = BuildId::new();
+    let manifest = librehub_validator::validate(
+        include_str!("../../../examples/org.librehub.Hello.json"),
+        ManifestFormat::Json,
+    )
+    .unwrap();
+    let executor = DockerExecutor::new(DockerConfig {
+        binary: "podman".into(),
+        isolation: IsolationPolicy::Hardened,
+        ..Default::default()
+    })
+    .unwrap();
+    let result = executor
+        .execute(
+            BuildJob {
+                id,
+                manifest,
+                architecture: Architecture::native(),
+                data_dir: dir.path().into(),
+                source_snapshot: None,
+            },
+            Arc::new(Console),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.environment.as_ref().unwrap().isolation,
+        IsolationPolicy::Hardened
+    );
+    assert_eq!(result.environment.as_ref().unwrap().network, "none");
+    assert!(result.environment.as_ref().unwrap().writable_bytes > 0);
+    assert_eq!(result.artifacts.len(), 1);
+    executor.cleanup(id).await.unwrap();
+}

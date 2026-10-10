@@ -24,14 +24,15 @@ impl Store {
     }
     /// Publication state is the durable backlog. Only 64 jobs are materialized as active work.
     pub async fn catalog_claim(&self) -> anyhow::Result<Option<PublishRecord>> {
-        self.run(|db| {
+        let enforce = self.supply_policy == SupplyChainPolicy::Enforce;
+        self.run(move |db| {
             let tx = db.transaction()?;
             tx.execute("INSERT INTO catalog_jobs(publication_id,state,updated_at) SELECT
                  p.id,'pending',json_extract(p.record,'$.updated_at') FROM publishes p WHERE p.status='succeeded' AND NOT
                  EXISTS(SELECT 1 FROM catalog_jobs j WHERE j.publication_id=p.id) ORDER BY p.rowid LIMIT max(0,64-(SELECT
                  count(*) FROM catalog_jobs WHERE state IN ('pending','indexing')))",[])?;
             let raw: Option<String> = tx.query_row("SELECT p.record FROM catalog_jobs j JOIN publishes p ON p.id=j.publication_id WHERE j.state='pending' AND
-                 p.status='succeeded' ORDER BY p.rowid LIMIT 1",[],|r|r.get(0)).optional()?;
+                 p.status='succeeded' AND (?1=0 OR NOT EXISTS(SELECT 1 FROM build_attestations b WHERE b.build_id=p.build_id) OR EXISTS(SELECT 1 FROM release_attestations r WHERE r.publication_id=p.id)) ORDER BY p.rowid LIMIT 1",[enforce],|r|r.get(0)).optional()?;
             let publication: Option<PublishRecord> = raw.map(|r|serde_json::from_str(&r)).transpose()?;
             if let Some(p) = &publication { tx.execute("UPDATE catalog_jobs SET state='indexing',error_code=NULL WHERE publication_id=?1 AND state='pending'",[p.id.to_string()])?; }
             tx.commit()?; Ok(publication)
@@ -569,6 +570,7 @@ mod tests {
                 build.id,
                 BuildStatus::Succeeded,
                 Some(BuildResult {
+                    environment: None,
                     exit_code: Some(0),
                     artifacts: vec![Artifact {
                         path: format!("builds/{}/artifacts/application.flatpak", build.id),

@@ -95,7 +95,7 @@ describe("server pages consume catalog DTOs", () => {
     };
     getCatalog.mockImplementation((p: string) =>
       Promise.resolve(
-        p.includes("/releases")
+        p.endsWith("/provenance") ? null : p.includes("/releases")
           ? { items: [release], total: 1, limit: 24, offset: 0 }
           : app,
       ),

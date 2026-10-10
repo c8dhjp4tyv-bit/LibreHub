@@ -156,3 +156,9 @@ flowchart TD
 The API runs a fifth durable supervisor (`security_worker`) polling queued publications. Security job failures or external feed outages never roll back signed publications. The catalog and store layer dynamically injects `TrustSummary`, displays trust badges, warns of significant permission escalations, and gates delisted or removed applications.
 
 See [trust.md](trust.md), [sbom.md](sbom.md), [vulnerability-analysis.md](vulnerability-analysis.md), [moderation.md](moderation.md), and [m5-verification.md](m5-verification.md).
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

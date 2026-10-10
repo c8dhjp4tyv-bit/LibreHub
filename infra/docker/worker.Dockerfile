@@ -1,4 +1,4 @@
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 ARG TARGETARCH
 ARG RUNTIME_BRANCH=25.08
 ENV HOME=/home/builder \

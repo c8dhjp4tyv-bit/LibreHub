@@ -146,3 +146,9 @@ Changes are categorized neutrally to inform users without sensationalism:
 - **`none`**: No permission changes between releases.
 
 A new release cannot silently broaden permissions without being recorded and exposed on the public store page.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

@@ -1,0 +1,107 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "subject": [
+    {
+      "name": "app/org.example.Hello/x86_64/master",
+      "digest": {
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    }
+  ],
+  "predicate": {
+    "buildDefinition": {
+      "buildType": "https://librehub.org/build/flatpak/v1",
+      "externalParameters": {
+        "buildId": "11111111-1111-4111-8111-111111111111",
+        "appId": "org.example.Hello",
+        "architecture": "x86_64",
+        "branch": "master",
+        "source": {
+          "project_id": "11111111-1111-4111-8111-111111111111",
+          "revision": {
+            "repository": "https://github.com/example/hello.git",
+            "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_ref": "refs/heads/main",
+            "resolved_at": "2026-01-01T00:00:00Z"
+          },
+          "manifest_path": "hello.json",
+          "snapshot": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size_bytes": 1024,
+            "file_count": 1
+          },
+          "trigger": "manual",
+          "trigger_event_id": "11111111-1111-4111-8111-111111111111",
+          "policy_version": 1
+        },
+        "declaredDependencies": []
+      },
+      "internalParameters": {
+        "containerRuntime": "docker",
+        "builderVersion": "0.1.0",
+        "imageConfigDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "runtimeRef": "runtime/org.freedesktop.Platform/x86_64/25.08",
+        "runtimeCommit": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "sdkRef": "runtime/org.freedesktop.Sdk/x86_64/25.08",
+        "sdkCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "flatpakBuilderVersion": "flatpak-builder 1.4.4",
+        "architecture": "x86_64",
+        "isolation": "compatibility",
+        "network": "none",
+        "writableBytes": 0
+      },
+      "resolvedDependencies": [
+        {
+          "uri": "https://github.com/example/hello.git",
+          "digest": {
+            "gitCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "uri": "librehub:source-snapshot",
+          "digest": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        {
+          "uri": "librehub:manifest",
+          "digest": {
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        },
+        {
+          "uri": "librehub:worker-image-config",
+          "digest": {
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        },
+        {
+          "uri": "runtime/org.freedesktop.Platform/x86_64/25.08",
+          "digest": {
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        },
+        {
+          "uri": "runtime/org.freedesktop.Sdk/x86_64/25.08",
+          "digest": {
+            "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        }
+      ]
+    },
+    "runDetails": {
+      "builder": {
+        "id": "https://librehub.org/builders/container/v1",
+        "version": {
+          "librehub": "0.1.0"
+        }
+      },
+      "metadata": {
+        "invocationId": "11111111-1111-4111-8111-111111111111",
+        "startedOn": "2026-01-01T00:00:00Z",
+        "finishedOn": "2026-01-01T00:00:00Z"
+      }
+    }
+  }
+}

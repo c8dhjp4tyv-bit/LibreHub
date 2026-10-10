@@ -807,6 +807,7 @@ async fn automatic_publication_fixture() -> (Harness, ProjectId, SourceEvent) {
             build,
             BuildStatus::Succeeded,
             Some(BuildResult {
+                environment: None,
                 exit_code: Some(0),
                 artifacts: vec![Artifact {
                     path: format!("builds/{build}/artifacts/application.flatpak"),
@@ -977,6 +978,7 @@ async fn developer_cannot_publish_over_another_developers_application_id() {
                 id,
                 BuildStatus::Succeeded,
                 Some(BuildResult {
+                    environment: None,
                     exit_code: Some(0),
                     artifacts: vec![Artifact {
                         path: format!("builds/{id}/artifacts/application.flatpak"),
