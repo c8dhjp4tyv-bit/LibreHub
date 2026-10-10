@@ -14,7 +14,7 @@ The root SPDX Package is cryptographically bound to the publication and build ar
 
 - **`SPDXID`**: `SPDXRef-Application`
 - **`name`**: Application ID (e.g., `org.librehub.CatalogHello`)
-- **`versionInfo`**: Runtime version or application release version
+- **`versionInfo`**: Verified AppStream application version, or immutable source revision when unavailable
 - **`packageFileName`**: Flatpak ref (e.g., `app/org.librehub.CatalogHello/x86_64/stable`)
 - **`checksums`**:
   - `SHA256`: OSTree commit checksum

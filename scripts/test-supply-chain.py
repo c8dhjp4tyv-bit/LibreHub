@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -57,22 +58,38 @@ def main():
                 except (urllib.error.URLError,ConnectionResetError):pass
                 time.sleep(.2)
             raise TimeoutError(path)
-        def start():
+        def start(stage=None):
             nonlocal process
-            process=subprocess.Popen([ROOT/'target/debug/librehub-api'],env=env,stdout=log,stderr=log);wait('/ready',lambda v:v['ready'])
+            start_env=env.copy()
+            if stage:start_env['LIBREHUB_TEST_ATTESTATION_FAULT_STAGE']=stage
+            process=subprocess.Popen([ROOT/'target/debug/librehub-api'],env=start_env,stdout=log,stderr=log);wait('/ready',lambda v:v['ready'])
         def stop(crash=False):
             if process and process.poll() is None:process.send_signal(signal.SIGKILL if crash else signal.SIGTERM);process.wait(timeout=120)
         try:
-            start()
+            start('build_evidence')
             project=request('/api/v1/projects',{'slug':'m6-hello','display_name':'M6 Hello','repository':{'provider':'git','url':REPOSITORY},'default_branch':'main','auto_build':False,'build_branches':['main'],'build_tags':True})['project']['id']
             def build():
                 trigger=request(f'/api/v1/projects/{project}/builds',{'ref':'main'})
                 wait(f'/api/v1/projects/{project}/source-events/{trigger["source_event_id"]}',lambda v:v['status']=='completed')
                 return wait('/api/v1/builds/'+trigger['build_id'],lambda v:v['status']=='succeeded')
             b=build();assert b['provenance']['revision']['commit']==fixture.commit1
+            crashes=[]
+            def signing_crash(stage,following=None):
+                marker=work/'data'/('attestation-fault-'+stage);deadline=time.monotonic()+180
+                while not marker.exists() and time.monotonic()<deadline:
+                    assert process.poll() is None
+                    time.sleep(.05)
+                assert marker.exists(),stage
+                stop(crash=True);crashes.append(stage);start(following)
+            for stage,following in [('build_evidence','build_verified'),('build_verified','build_signed'),('build_signed','build_persisted'),('build_persisted',None)]:signing_crash(stage,following)
+            with sqlite3.connect(work/'data/builds.sqlite3') as db:
+                assert db.execute('SELECT count(*) FROM builds WHERE id=?',(b['id'],)).fetchone()[0]==1
+                assert db.execute('SELECT count(*) FROM build_attestations WHERE build_id=?',(b['id'],)).fetchone()[0]==1
             artifact=work/'data'/b['result']['artifacts'][0]['path'];assert hashlib.sha256(artifact.read_bytes()).hexdigest()==b['result']['artifacts'][0]['sha256']
+            stop();start('release_verified')
             pub=request('/api/v1/builds/'+b['id']+'/publish',{'channel':'stable'});pub=wait('/api/v1/publishes/'+pub['id'],lambda v:v['status']=='succeeded')
             path=f'/api/v1/catalog/apps/{APP}/releases/{pub["id"]}'
+            for stage,following in [('release_verified','release_signed'),('release_signed','release_persisted'),('release_persisted',None)]:signing_crash(stage,following)
             evidence=wait(path+'/provenance',lambda v:v['verification']['verified']);bundle=request(path+'/attestation/download');(proof/'attestation.json').write_text(json.dumps(bundle))
             sbom=request(path+'/sbom/download',raw=True);(proof/'sbom.spdx.json').write_bytes(sbom)
             for name in ['build','release']:
@@ -89,7 +106,7 @@ def main():
             assert json.loads(run(verify_args,env))['verified']
             tampering=[]
             original=json.dumps(bundle)
-            for name in ['payload','signature','artifact','checksum','key','subject']:
+            for name in ['payload','signature','artifact','checksum','key','subject','sbom','commit','snapshot','manifest','publication','revoked_key']:
                 altered=json.loads(original);args=verify_args.copy()
                 if name=='payload':
                     statement=json.loads(base64.b64decode(altered['release']['payload']));statement['predicate']['publicationId']='22222222-2222-4222-8222-222222222222';altered['release']['payload']=base64.b64encode(json.dumps(statement).encode()).decode()
@@ -98,8 +115,15 @@ def main():
                     bad=work/'bad.flatpak';bad.write_bytes(b'altered bundle');args[args.index('--artifact')+1]=bad
                 elif name=='checksum':args[args.index('--checksum')+1]='0'*64
                 elif name=='subject':args[args.index('--ref')+1]='app/org.wrong.App/x86_64/master'
+                elif name=='sbom':
+                    bad=work/'changed-sbom.json';bad.write_text('{}');args[args.index('--sbom')+1]=bad
+                elif name in ['commit','snapshot','manifest']:
+                    args.extend(['--'+name,'0'*(40 if name=='commit' else 64)])
+                elif name=='publication':args[args.index('--publication-id')+1]='22222222-2222-4222-8222-222222222222'
+                elif name=='revoked_key':
+                    revoked=json.loads(json.dumps(keys));revoked['keys'][0]['state']='revoked';other=work/'revoked.json';other.write_text(json.dumps(revoked));args[2]=other
                 else:
-                    other=work/'other.json';other.write_text(json.dumps({'version':1,'keys':[]}));args[2]=other
+                    other=work/'other-keys.json';run([admin,'attestor','provision',work/'other-seed',other],env);args[2]=other
                 altered_file=work/'altered.json';altered_file.write_text(json.dumps(altered));args[1]=altered_file
                 result=subprocess.run([str(a) for a in args],env=env,text=True,capture_output=True,timeout=30);assert result.returncode!=0;assert json.loads(result.stdout)['code']=='verification_failed';tampering.append(name)
             # Normal client trust remains GPG-enabled, and installed commit matches release subject.
@@ -123,7 +147,7 @@ def main():
             # Deliberately varying file contents must remain a visible mismatch.
             manifest_path=fixture.repo/'org.librehub.ProjectHello.json';manifest=json.loads(manifest_path.read_text());manifest['modules'][0]['build-commands'].append('date +%s%N > /app/non-deterministic');manifest_path.write_text(json.dumps(manifest));git(fixture.repo,'add','.');git(fixture.repo,'commit','-m','Deliberately nondeterministic fixture')
             start();nondeterministic_build=build();stop();nondeterministic=json.loads(run([admin,'builds','verify-reproducibility',nondeterministic_build['id']],env));assert nondeterministic['state']=='non_reproducible',nondeterministic
-            report={'source_commit':b['provenance']['revision']['commit'],'source_snapshot':b['provenance']['snapshot']['sha256'],'build_id':b['id'],'artifact_sha256':b['result']['artifacts'][0]['sha256'],'publication_id':pub['id'],'published_checksum':commit,'ref':ref,'environment':b['result']['environment'],'attestor_key_id':keys['keys'][0]['key_id'],'independent_openssl':'passed','offline_verifier':'passed','tampering_rejected':tampering,'deterministic':deterministic,'nondeterministic':nondeterministic,'installed_output':output,'restart_evidence_identical':True,'commit_sha':run(['git','rev-parse','HEAD'],os.environ.copy())}
+            report={'source_commit':b['provenance']['revision']['commit'],'source_snapshot':b['provenance']['snapshot']['sha256'],'build_id':b['id'],'artifact_sha256':b['result']['artifacts'][0]['sha256'],'publication_id':pub['id'],'published_checksum':commit,'ref':ref,'environment':b['result']['environment'],'attestor_key_id':keys['keys'][0]['key_id'],'independent_openssl':'passed','offline_verifier':'passed','tampering_rejected':tampering,'deterministic':deterministic,'nondeterministic':nondeterministic,'installed_output':output,'restart_evidence_identical':True,'signing_crash_stages':crashes,'commit_sha':run(['git','rev-parse','HEAD'],os.environ.copy())}
             (proof/'proof.json').write_text(json.dumps(report,indent=2));print(json.dumps(report))
         finally:
             stop();fixture.close();log.close()

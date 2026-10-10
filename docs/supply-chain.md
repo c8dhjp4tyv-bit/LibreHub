@@ -54,3 +54,21 @@ removal moderation. They verify bounded stored signatures and current key states
 they do not import entire Flatpaks on catalog requests. No positive verification
 cache survives a key change. Downloaded bundles contain both original DSSE
 envelopes, not a server-supplied assertion that a signature is valid.
+
+## Dependency update procedure
+
+Critical Actions use reviewed commit SHAs, Rust/npm use committed lockfiles,
+flat-manager uses its existing pinned source commit and pinned Rust image, and
+worker/manager Debian bases use content digests. The worker pins Flatpak,
+flatpak-builder, bubblewrap, Git and jq package versions plus per-architecture
+runtime/SDK commits. New image builds explicitly deploy and check those commits;
+a runtime branch change requires coordinated commit-pin updates. Other Debian
+packages are not a fully reproducible snapshot of the package repository.
+
+Review upstream security/release notes before updates; do not replace pins with
+floating tags. Resolve new runtime commits with the normal trusted Flatpak remote,
+update the architecture-specific Dockerfile pins, rebuild the image, run the real
+M1–M6 and hardened acceptance checks, inspect recorded SDK/runtime/tool versions,
+and deliberately update the operator's allowed image configuration ID. Preserve
+old images for intended rebuilds. Changing a tag alone cannot rewrite historical
+build evidence, and a missing old image yields an inconclusive rebuild.

@@ -118,13 +118,21 @@ pub async fn evidence(
             .get(publication.build_id)
             .await
             .map_err(ApiError::internal)?
-            .is_none_or(|b| {
-                b.result.is_none_or(|r| r.environment.is_none()) || b.provenance.is_none()
-            });
+            .is_none_or(|b| b.result.is_none_or(|r| r.environment.is_none()));
         if legacy {
             result.status = AttestationStatus::LegacyUnattested;
             result.verification.code = "legacy_unattested".into();
         } else {
+            if store
+                .get(publication.build_id)
+                .await
+                .map_err(ApiError::internal)?
+                .is_some_and(|b| b.provenance.is_none())
+            {
+                result.status = AttestationStatus::Unavailable;
+                result.verification.code = "immutable_source_unavailable".into();
+                return Ok(result);
+            }
             let failed = store.run(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM attestation_jobs WHERE target_id=?1 AND state='failed')",[id.to_string()],|r|r.get::<_,bool>(0))?)).await.map_err(ApiError::internal)?;
             if failed {
                 result.status = AttestationStatus::Failed;
@@ -154,6 +162,35 @@ pub async fn evidence(
                 && r.subject[0].digest.get("sha256")
                     == publication.result.as_ref().map(|p| &p.published_ref.commit),
             "publication_mismatch"
+        );
+        let record = store
+            .get(publication.build_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("build_missing"))?;
+        let ProvenancePredicate::Build(bp) = &b.predicate else {
+            anyhow::bail!("build_predicate_mismatch")
+        };
+        let invocation = &bp.build_definition.external_parameters;
+        let stored_source = record
+            .provenance
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("source_missing"))?;
+        let stored_result = record
+            .result
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("artifact_missing"))?;
+        anyhow::ensure!(
+            record.status == BuildStatus::Succeeded
+                && stored_result.artifacts.len() == 1
+                && invocation.build_id == record.id
+                && invocation.app_id == record.manifest.app_id
+                && invocation.architecture == record.architecture
+                && serde_json::to_value(&invocation.source)?
+                    == serde_json::to_value(stored_source)?
+                && stored_result.environment.as_ref()
+                    == Some(&bp.build_definition.internal_parameters)
+                && b.subject[0].digest.get("sha256") == Some(&stored_result.artifacts[0].sha256),
+            "build_record_mismatch"
         );
         Ok::<_, anyhow::Error>((b, r))
     }

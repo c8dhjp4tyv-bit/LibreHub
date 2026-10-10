@@ -4,8 +4,8 @@ M1 is intended for a trusted development operator on a dedicated Linux build hos
 Manifest build commands execute arbitrary code. Validation improves developer
 feedback and blocks obvious unsafe configuration; it is not a complete security
 policy. M3 supplies bearer authentication, project/build ownership and bounded developer
-admission. Scanning and hardened VM isolation remain later milestones (including
-M5). Keep the API on a dedicated host with TLS/gateway rate and egress controls.
+admission. M5 provides bounded vulnerability analysis; a VM isolation boundary remains
+unimplemented. Keep the API on a dedicated host with TLS/gateway rate and egress controls.
 
 ## Container boundary
 

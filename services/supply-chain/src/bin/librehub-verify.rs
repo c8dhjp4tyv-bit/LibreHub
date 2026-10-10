@@ -47,7 +47,11 @@ fn run() -> Result<String> {
                     "--artifact",
                     "--sbom",
                     "--source",
-                    "--image"
+                    "--image",
+                    "--commit",
+                    "--snapshot",
+                    "--manifest",
+                    "--build-id"
                 ]
                 .contains(&chunk[0].as_str())
                 && options
@@ -135,6 +139,25 @@ fn run() -> Result<String> {
                 .image_config_digest
                 == *image,
             "image_policy_mismatch"
+        );
+    }
+    let external = &build.build_definition.external_parameters;
+    for (flag, actual) in [
+        ("--commit", external.source.revision.commit.as_str()),
+        ("--snapshot", external.source.snapshot.sha256.as_str()),
+        (
+            "--manifest",
+            build.build_definition.resolved_dependencies[2].digest["sha256"].as_str(),
+        ),
+    ] {
+        if let Some(expected) = options.get(flag) {
+            ensure!(actual == *expected, "material_policy_mismatch");
+        }
+    }
+    if let Some(expected) = options.get("--build-id") {
+        ensure!(
+            external.build_id.to_string() == *expected,
+            "build_identity_mismatch"
         );
     }
     Ok(bundle.release.signatures[0].keyid.clone())

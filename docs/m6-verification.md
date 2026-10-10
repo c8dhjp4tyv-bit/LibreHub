@@ -12,8 +12,12 @@ Git fixture, resolves its SHA, builds M1's actual Flatpak, rehashes the artifact
 signs build provenance, verifies PAE/signatures with OpenSSL, publishes using M2,
 verifies public evidence using the offline CLI, downloads/validates the SBOM,
 installs/runs with normal Flatpak, checks the installed checksum and tests exact
-evidence retention across API restart. It exercises tampered payload/signature,
-wrong artifact/checksum/key/subject and deterministic/nondeterministic rebuilds.
+evidence retention across API restart. Debug-only fault barriers stop the real
+process during evidence collection, after bundle verification, after signing and
+after persistence for builds and releases; the acceptance script kills/restarts
+at each barrier and checks immutable identities. Release builds compile out
+these operator-only test hooks. It exercises tampered payload/signature,
+wrong artifact/checksum/key/subject/SBOM/material/publication identities and deterministic/nondeterministic rebuilds.
 Test attestor seeds remain in temporary operator storage and are never uploaded.
 Proof/artifacts are in `data/m6-proof/`, labeled with GitHub commit SHA and retained
 for seven days. Existing M1–M5 acceptance steps remain mandatory.

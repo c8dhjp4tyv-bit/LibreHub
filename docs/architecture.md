@@ -1,6 +1,6 @@
 # LibreHub architecture
 
-The workspace has seven Rust crates. `common` owns serializable domain types,
+The workspace has nine Rust crates. `common` owns serializable domain types,
 including UUID-backed IDs, architectures, UTC timestamps, manifests, state
 transitions, structured validation/build errors, logs and artifacts. Extensible
 Flatpak options remain JSON values at the manifest boundary; job state and service

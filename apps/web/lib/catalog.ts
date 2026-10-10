@@ -215,7 +215,7 @@ export function commitLink(
 }
 
 export interface SupplyChainEvidence {
-  status: "pending" | "verified" | "failed" | "legacy_unattested";
+  status: "pending" | "verified" | "failed" | "legacy_unattested" | "unavailable";
   verification: { verified: boolean; code: string; key_id: string | null };
   reproducibility: string;
   build: {

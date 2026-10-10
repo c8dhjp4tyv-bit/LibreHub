@@ -1088,6 +1088,53 @@ mod tests {
         );
     }
     #[test]
+    fn attestor_rederives_manifest_and_rejects_source_substitution() {
+        let source = fetched();
+        let prepared = GitSource::default()
+            .discover_manifest(&source, None)
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sources")).unwrap();
+        let id = BuildId::new();
+        let path = root.path().join("sources").join(format!("{id}.tar"));
+        std::fs::write(&path, &prepared.archive).unwrap();
+        let mut provenance = librehub_common::BuildProvenance {
+            project_id: librehub_common::ProjectId::new(),
+            revision: librehub_common::SourceRevision {
+                repository: "https://github.com/example/hello.git".into(),
+                commit: "a".repeat(40),
+                source_ref: "refs/heads/main".into(),
+                resolved_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            },
+            manifest_path: prepared.manifest_path.clone(),
+            snapshot: prepared.snapshot.clone(),
+            trigger: librehub_common::TriggerType::Manual,
+            trigger_event_id: librehub_common::SourceEventId::new(),
+            policy_version: 1,
+        };
+        let digest =
+            verify_manifest_snapshot(root.path(), id, &provenance, &prepared.manifest).unwrap();
+        assert_eq!(
+            digest,
+            format!(
+                "{:x}",
+                Sha256::digest(&source.files[&prepared.manifest_path])
+            )
+        );
+        let mut wrong = prepared.manifest.clone();
+        wrong.command = "different".into();
+        assert!(verify_manifest_snapshot(root.path(), id, &provenance, &wrong).is_err());
+        provenance.manifest_path = "another.json".into();
+        assert!(
+            verify_manifest_snapshot(root.path(), id, &provenance, &prepared.manifest).is_err()
+        );
+        provenance.manifest_path = prepared.manifest_path;
+        std::fs::write(&path, b"swapped source archive").unwrap();
+        assert!(
+            verify_manifest_snapshot(root.path(), id, &provenance, &prepared.manifest).is_err()
+        );
+    }
+    #[test]
     fn snapshot_tampering_and_symlinks_are_rejected() {
         let source = fetched();
         let prepared = GitSource::default()

@@ -142,7 +142,7 @@ impl SecurityWorker {
         };
 
         // 2. Extract /metadata text
-        let metadata_text = extract_metadata_text(
+        let (metadata_text, declared_version) = extract_metadata_text(
             self.store.data_dir.clone(),
             &build,
             &manifest,
@@ -221,7 +221,7 @@ impl SecurityWorker {
             .map(|p| p.revision.commit.as_str());
 
         // Application version is distinct from the SDK/runtime branch.
-        let app_version = build
+        let fallback_version = build
             .provenance
             .as_ref()
             .map(|p| {
@@ -232,6 +232,7 @@ impl SecurityWorker {
                     .to_owned()
             })
             .unwrap_or_else(|| publication.id.to_string());
+        let app_version = declared_version.unwrap_or(fallback_version);
         let sbom_input = SbomInput {
             publication_id: &publication.id,
             app_id: &publication.app_id,
@@ -321,7 +322,7 @@ async fn extract_metadata_text(
     manifest: &FlatpakManifest,
     publication: &PublishRecord,
     repository: &RepositoryConfig,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<String>)> {
     let result = publication
         .result
         .as_ref()
@@ -334,6 +335,41 @@ async fn extract_metadata_text(
         Duration::from_secs(60),
     )
     .await?;
+    anyhow::ensure!(
+        prepared.commit == result.published_ref.source_commit
+            && prepared.ref_name == result.published_ref.ref_name,
+        "Publication source mismatch"
+    );
+    let repo = format!("--repo={}", prepared.path.display());
+    let mut declared_version = None;
+    for path in [
+        format!("/files/share/metainfo/{}.metainfo.xml", publication.app_id),
+        format!("/files/share/appdata/{}.appdata.xml", publication.app_id),
+    ] {
+        if librehub_publisher::artifact::command(
+            "ostree",
+            &[
+                repo.clone(),
+                "ls".into(),
+                prepared.commit.clone(),
+                path.clone(),
+            ],
+            Duration::from_secs(60),
+        )
+        .await
+        .is_ok()
+        {
+            let xml = librehub_publisher::artifact::command(
+                "ostree",
+                &[repo.clone(), "cat".into(), prepared.commit.clone(), path],
+                Duration::from_secs(60),
+            )
+            .await?;
+            declared_version =
+                librehub_catalog::metadata::appstream(&xml, &publication.app_id)?.version;
+            break;
+        }
+    }
     let signed = format!(
         "--repo={}",
         prepared.workspace.path().join("signed").display()
@@ -361,17 +397,19 @@ async fn extract_metadata_text(
     ])
     .await?;
     let bytes = ostree_output(&[&signed, "cat", &result.published_ref.commit, "/metadata"]).await?;
-    Ok(String::from_utf8(bytes)?)
+    Ok((String::from_utf8(bytes)?, declared_version))
 }
 
 async fn ostree_output(args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let output = tokio::process::Command::new("ostree")
-        .args(args)
-        .output()
-        .await?;
-    checked_output(output)
+    Ok(librehub_publisher::artifact::command(
+        "ostree",
+        &args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>(),
+        Duration::from_secs(60),
+    )
+    .await?
+    .into_bytes())
 }
-
+#[cfg(test)]
 fn checked_output(output: std::process::Output) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         output.status.success(),

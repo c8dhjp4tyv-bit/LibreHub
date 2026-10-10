@@ -129,6 +129,7 @@ impl Store {
             build.status == BuildStatus::Succeeded,
             "build_not_successful"
         );
+        fault_barrier(self, "build_evidence").await?;
         let root = self.data_dir.clone();
         let source_check = source.clone();
         let m = manifest.clone();
@@ -145,6 +146,7 @@ impl Store {
             Duration::from_secs(60),
         )
         .await?;
+        fault_barrier(self, "build_verified").await?;
         let artifact_sha = build.result.as_ref().context("artifact_missing")?.artifacts[0]
             .sha256
             .clone();
@@ -230,6 +232,7 @@ impl Store {
             return Ok(existing);
         }
         let envelope = signer.sign(&statement)?;
+        fault_barrier(self, "build_signed").await?;
         let (_, digest) = crypto::verify(&envelope, &keys)?;
         let raw = serde_json::to_string(&envelope)?;
         let app = manifest.app_id;
@@ -242,7 +245,10 @@ impl Store {
             tx.execute("INSERT INTO supply_chain_audit(action,target_id,result,timestamp) VALUES('build.attestation_created',?1,'verified',?2)",params![id.to_string(),Utc::now().to_rfc3339()])?;
             tx.commit()?;Ok(())
         }).await?;
-        Ok(envelope)
+        fault_barrier(self, "build_persisted").await?;
+        self.envelope("build", id.to_string())
+            .await?
+            .context("persisted_attestation_missing")
     }
     pub async fn check_supply_policy(&self, id: BuildId) -> Result<PolicyDecision> {
         let result = self.attest_build(id).await;
@@ -354,6 +360,14 @@ impl Store {
             details.app_id == publication.app_id && crypto::sha256(&sbom) == details.sbom_sha256,
             "sbom_integrity"
         );
+        let spdx: SbomDocument = serde_json::from_slice(&sbom)?;
+        ensure!(
+            spdx.spdx_version == "SPDX-2.3"
+                && spdx.document_namespace.ends_with(&format!("/{id}"))
+                && spdx.packages.iter().any(|p| p.name == publication.app_id
+                    && p.hashes.get("SHA256") == Some(&published.published_ref.commit)),
+            "sbom_release_mismatch"
+        );
         let statement = ProvenanceStatement {
             statement_type: STATEMENT_V1.into(),
             predicate_type: RELEASE_V1.into(),
@@ -389,11 +403,13 @@ impl Store {
             );
             return Ok(existing);
         }
+        fault_barrier(self, "release_verified").await?;
         let envelope = self
             .attestor
             .as_ref()
             .context("attestor_unavailable")?
             .sign(&statement)?;
+        fault_barrier(self, "release_signed").await?;
         let (_, digest) = crypto::verify(&envelope, &keys)?;
         let raw = serde_json::to_string(&envelope)?;
         let key = envelope.signatures[0].keyid.clone();
@@ -401,7 +417,10 @@ impl Store {
             tx.execute("INSERT OR IGNORE INTO release_attestations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id.to_string(),publication.build_id.to_string(),publication.app_id,published_commit(&statement),details.sbom_sha256,digest,key,raw,Utc::now().to_rfc3339()])?;
             let persisted:String = tx.query_row("SELECT statement_sha256 FROM release_attestations WHERE publication_id=?1",[id.to_string()],|r|r.get(0))?;ensure!(persisted == digest,"conflicting_attestation");
             tx.execute("INSERT INTO supply_chain_audit(action,target_id,result,timestamp) VALUES('release.attestation_created',?1,'verified',?2)",params![id.to_string(),Utc::now().to_rfc3339()])?;tx.commit()?;Ok(())}).await?;
-        Ok(envelope)
+        fault_barrier(self, "release_persisted").await?;
+        self.envelope("release", id.to_string())
+            .await?
+            .context("persisted_attestation_missing")
     }
 }
 fn published_commit(s: &ProvenanceStatement) -> &str {
@@ -409,7 +428,7 @@ fn published_commit(s: &ProvenanceStatement) -> &str {
 }
 
 /// Durable derivation backlog. Signing retry never calls publish; failed jobs retry on restart or operator request.
-pub async fn run(store: Store, shutdown: tokio_util::sync::CancellationToken) -> Result<()> {
+async fn run_inner(store: Store, shutdown: tokio_util::sync::CancellationToken) -> Result<()> {
     if store.attestor.is_none() {
         return Ok(());
     }
@@ -639,4 +658,32 @@ impl Store {
             row.map(|(mode,allowed,violations)|Ok(PolicyDecision {mode:serde_json::from_value(serde_json::json!(mode))?,allowed,violations:serde_json::from_str(&violations)?})).transpose()
         }).await
     }
+}
+
+async fn fault_barrier(store: &Store, stage: &str) -> Result<()> {
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var("LIBREHUB_TEST_ATTESTATION_FAULT_STAGE")
+            .ok()
+            .as_deref()
+            == Some(stage)
+        {
+            let path = store.data_dir.join(format!("attestation-fault-{stage}"));
+            tokio::fs::write(path, b"ready").await?;
+            std::future::pending::<()>().await;
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (store, stage);
+    }
+    Ok(())
+}
+
+pub async fn run(store: Store, shutdown: tokio_util::sync::CancellationToken) -> Result<()> {
+    let result = run_inner(store, shutdown.clone()).await;
+    if result.is_err() {
+        shutdown.cancel();
+    }
+    result
 }

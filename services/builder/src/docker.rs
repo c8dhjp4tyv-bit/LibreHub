@@ -317,7 +317,12 @@ impl DockerExecutor {
                 .position(|a| a == &environment.image_config_digest)
                 .context("Missing image argument")?;
             args.insert(image_index, "--read-only".into());
+            args.insert(image_index, "--pid=private".into());
+            args.insert(image_index, "--ipc=private".into());
+            args.insert(image_index, "--uts=private".into());
+            args.insert(image_index, "--cgroupns=private".into());
             args.insert(image_index, "--image-volume=ignore".into());
+            args.insert(image_index, "--env=XDG_CACHE_HOME=/work/cache".into());
             args.insert(
                 image_index,
                 format!(
@@ -356,25 +361,6 @@ impl DockerExecutor {
                 serde_json::from_str(&self.metadata(&["inspect", &name]).await?)
                     .context("Invalid container metadata")?;
             let c = &config[0];
-            if c["HostConfig"]["Privileged"] != false
-                || c["HostConfig"]["ReadonlyRootfs"] != true
-                || c["HostConfig"]["NetworkMode"] != "none"
-                || c["HostConfig"]["SecurityOpt"]
-                    .as_array()
-                    .is_none_or(|opts| {
-                        opts.iter()
-                            .any(|o| o.as_str().is_some_and(|s| s.contains("unconfined")))
-                    })
-            {
-                bail_executor("Invalid hardened runtime configuration")?;
-            }
-            if c["Mounts"].as_array().is_some_and(|mounts| {
-                mounts
-                    .iter()
-                    .any(|m| m["Type"] == "bind" || m["Type"] == "volume")
-            }) {
-                bail_executor("Unexpected host or image-volume mount")?;
-            }
             let spec_path = c["OCIConfigPath"]
                 .as_str()
                 .context("Missing OCI configuration")?;
@@ -382,11 +368,7 @@ impl DockerExecutor {
                 &std::fs::read(spec_path).context("Cannot read OCI configuration")?,
             )
             .context("Invalid OCI configuration")?;
-            if spec["linux"]["seccomp"]["defaultAction"] != "SCMP_ACT_ERRNO"
-                || spec["process"]["noNewPrivileges"] != true
-            {
-                bail_executor("Hardened seccomp unavailable")?;
-            }
+            verify_hardened_configuration(c, &spec)?;
             self.run(&["start".into(), name.clone()], logs.clone(), cancel)
                 .await?;
         }
@@ -586,6 +568,47 @@ impl DockerExecutor {
         }
         result
     }
+}
+
+fn verify_hardened_configuration(
+    c: &serde_json::Value,
+    spec: &serde_json::Value,
+) -> anyhow::Result<()> {
+    if c["HostConfig"]["Privileged"] != false
+        || c["HostConfig"]["ReadonlyRootfs"] != true
+        || c["HostConfig"]["NetworkMode"] != "none"
+        || c["HostConfig"]["SecurityOpt"]
+            .as_array()
+            .is_none_or(|opts| {
+                opts.iter()
+                    .any(|o| o.as_str().is_some_and(|s| s.contains("unconfined")))
+            })
+    {
+        bail!("Invalid hardened runtime configuration");
+    }
+    if c["Mounts"].as_array().is_some_and(|mounts| {
+        mounts
+            .iter()
+            .any(|m| m["Type"] == "bind" || m["Type"] == "volume")
+    }) {
+        bail!("Unexpected host or image-volume mount");
+    }
+    if spec["linux"]["seccomp"]["defaultAction"] != "SCMP_ACT_ERRNO"
+        || spec["process"]["noNewPrivileges"] != true
+        || spec["linux"]["resources"]["memory"]["limit"] != 4294967296u64
+        || spec["linux"]["resources"]["pids"]["limit"] != 512
+        || spec["linux"]["resources"]["cpu"]["quota"]
+            .as_i64()
+            .zip(spec["linux"]["resources"]["cpu"]["period"].as_i64())
+            .is_none_or(|(q, p)| p <= 0 || q != 2 * p)
+        || spec["process"]["user"]["uid"] != 10001
+        || spec["process"]["capabilities"]["effective"]
+            .as_array()
+            .is_none_or(|caps| !caps.is_empty())
+    {
+        bail!("Hardened seccomp or finite resources unavailable");
+    }
+    Ok(())
 }
 fn bail_executor(message: &str) -> Result<(), ExecutorError> {
     Err(anyhow::anyhow!("{message}").into())
@@ -1018,5 +1041,78 @@ mod extraction_cancellation_tests {
         cancel.cancel();
         assert!(extract_bundle(&archive, &destination, 100, "unused".into(), &cancel).is_err());
         assert!(!destination.exists());
+    }
+}
+
+#[cfg(test)]
+mod hardened_policy_tests {
+    use super::verify_hardened_configuration;
+    use serde_json::{Value, json};
+    fn valid() -> (Value, Value) {
+        (
+            json!({"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"NetworkMode":"none","SecurityOpt":["no-new-privileges=true","unmask=/proc/*"]},"Mounts":[{"Type":"tmpfs","Destination":"/work"}]}),
+            json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"},"resources":{"memory":{"limit":4294967296u64},"pids":{"limit":512},"cpu":{"quota":200000,"period":100000}}},"process":{"noNewPrivileges":true,"user":{"uid":10001},"capabilities":{"effective":[]}}}),
+        )
+    }
+    #[test]
+    fn rejects_seccomp_disabled_or_missing() {
+        for action in [json!("SCMP_ACT_ALLOW"), Value::Null] {
+            let (c, mut s) = valid();
+            s["linux"]["seccomp"]["defaultAction"] = action;
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_privilege_namespace_egress_and_writable_root() {
+        for field in ["Privileged", "ReadonlyRootfs", "NetworkMode"] {
+            let (mut c, s) = valid();
+            c["HostConfig"][field] = match field {
+                "Privileged" => json!(true),
+                "ReadonlyRootfs" => json!(false),
+                _ => json!("host"),
+            };
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_unconfined_profiles_and_credential_mounts() {
+        for opt in [
+            "seccomp=unconfined",
+            "apparmor=unconfined",
+            "systempaths=unconfined",
+        ] {
+            let (mut c, s) = valid();
+            c["HostConfig"]["SecurityOpt"] = json!([opt]);
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+        for source in [
+            "/var/run/docker.sock",
+            "/operator/attestor.seed",
+            "/operator/flat-manager.token",
+        ] {
+            let (mut c, s) = valid();
+            c["Mounts"] = json!([{"Type":"bind","Source":source,"Destination":"/secret"}]);
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_missing_limits_capabilities_or_no_new_privileges() {
+        for pointer in [
+            "/linux/resources/memory/limit",
+            "/linux/resources/pids/limit",
+            "/linux/resources/cpu/quota",
+            "/process/noNewPrivileges",
+            "/process/user/uid",
+            "/process/capabilities/effective",
+        ] {
+            let (c, mut s) = valid();
+            *s.pointer_mut(pointer).unwrap() = Value::Null;
+            assert!(verify_hardened_configuration(&c, &s).is_err(), "{pointer}");
+        }
+    }
+    #[test]
+    fn supported_configuration_requires_every_protection() {
+        let (c, s) = valid();
+        verify_hardened_configuration(&c, &s).unwrap();
     }
 }
