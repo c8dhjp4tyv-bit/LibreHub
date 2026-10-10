@@ -7,15 +7,14 @@ Verifies:
 3. Permission diff detection across consecutive releases (neutral severity categorization).
 4. Vulnerability matching evaluation against SBOM components (with graceful failure handling).
 5. Public reporting API & operator report resolution.
-6. Operator moderation controls (under_review, restricted, removed, reinstate) and catalog filtering.
+6. Operator moderation controls (restrict, remove, restore) and catalog filtering.
 7. Web store UI rendering trust badges, permission diff, vulnerability findings, and SBOM links.
 """
-import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
-import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -23,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
-from source_fixture import SourceFixture, REPOSITORY, git
+from source_fixture import SourceFixture, REPOSITORY
 
 ROOT = Path(__file__).resolve().parents[1]
 API = 'http://127.0.0.1:8080'
@@ -137,6 +136,8 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
     env = os.environ.copy()
     env.update(fixture.env())
     env['LIBREHUB_DATA_DIR'] = str(work / 'data')
+    # Start with an empty resolver fixture; external DNS must not affect this proof.
+    env['LIBREHUB_TEST_DNS_TXT'] = ''
 
     admin = str(ROOT / 'target/debug/librehub-admin')
     dev_info = json.loads(run([admin, 'create-developer', 'Security Verified Publisher'], env))
@@ -172,6 +173,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         app = api.wait('/api/v1/catalog/apps/' + APP, lambda a: a.get('current_stable_release'))
         assert app['name'] == 'Security Hello'
         assert app['publisher']['id'] == developer_id
+        assert app['current_stable_release']['source_commit'] == source_commit_1
 
         print("[2/7] Verifying Security Analysis, SBOM Generation, and Permission Snapshotting...")
         # Wait for security analysis job to finish
@@ -191,6 +193,9 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         assert sbom_json['spdxVersion'] == 'SPDX-2.3'
         assert sbom_json['name'] == f"{APP}-{manifest['runtime-version']}"
         assert len(sbom_json['packages']) >= 1
+        assert hashlib.sha256(sbom_bytes).hexdigest() == sec_details['sbom_sha256']
+        assert sbom_json['packages'][0]['checksums'][0]['checksumValue'] == pub1['result']['published_ref']['commit']
+        assert sec_details['permission_diff']['added']['filesystem'] == ['xdg-download:ro']
 
         # Check initial trust summary: community unverified publisher
         trust = public(f'/api/v1/catalog/apps/{APP}/trust')
@@ -267,6 +272,11 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         )
         assert sec_details2['status'] == 'ready'
         assert sec_details2['permission_severity'] == 'significant'
+        app2 = api.wait(
+            f'/api/v1/catalog/apps/{APP}',
+            lambda a: a['current_stable_release']['publication_id'] == pub2_id
+        )
+        assert app2['current_stable_release']['source_commit'] == source_commit_2
         diff = sec_details2['permission_diff']
         assert diff is not None
         assert diff['severity'] == 'significant'
@@ -391,12 +401,48 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         assert 'Download SBOM' in html
         assert 'Report this application' in html
 
+        proof = {
+            'app_id': APP,
+            'project_id': project['id'],
+            'publisher_id': developer_id,
+            'publications': [
+                {'publication_id': pub1_id, 'source_commit': source_commit_1,
+                 'published_checksum': pub1['result']['published_ref']['commit'],
+                 'sbom_sha256': sec_details['sbom_sha256']},
+                {'publication_id': pub2_id, 'source_commit': source_commit_2,
+                 'published_checksum': pub2['result']['published_ref']['commit'],
+                 'sbom_sha256': sec_details2['sbom_sha256']},
+            ],
+            'permissions_from_signed_commit': True,
+            'permission_diff': diff,
+            'verified_domain': domain,
+            'domain_verification_uses_dns_fixture': True,
+            'report_resolved': resolved['status'] == 'resolved',
+            'restricted_hidden_from_search': True,
+            'removed_returns_404': True,
+            'restored_visible_in_search': True,
+            'real_web_rendered': True,
+        }
+        proof_json = json.dumps(proof, indent=2)
+        assert token not in proof_json and token_challenge not in proof_json
+        (ROOT / 'data').mkdir(exist_ok=True)
+        (ROOT / 'data/m5-proof.json').write_text(proof_json + '\n')
         print("\nAll M5 Trust, Security & Moderation acceptance criteria PASSED!")
 
+    except BaseException:
+        for log in [api_log, web_log]:
+            log.flush()
+            log.seek(0)
+            print(log.read()[-16000:].replace(token, '[REDACTED]'))
+        raise
     finally:
         if web is not None:
             try:
                 os.killpg(os.getpgid(web.pid), signal.SIGTERM)
+                web.wait(timeout=30)
             except Exception:
                 pass
         api.stop()
+        fixture.close()
+        api_log.close()
+        web_log.close()

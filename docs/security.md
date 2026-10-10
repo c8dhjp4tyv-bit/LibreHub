@@ -55,6 +55,13 @@ build-args, BaseApps and runtime/extension builds are rejected. Remote file/arch
 sources require HTTPS URLs without credentials and SHA-256 checksums. Shell/build
 commands remain intentionally executable code inside the container.
 
+Prepared project snapshots may declare runtime filesystem permissions in
+`finish-args`, including `xdg-download:ro` and `home`. These describe access when
+the installed application runs; they do not add host mounts to build workers.
+Build-time `build-args` remain rejected and `flatpak-builder --sandbox` remains
+enabled. M5 extracts these permissions from the signed published metadata and
+compares them across releases.
+
 Default worker networking is `none`. Enabling `bridge` permits source downloads
 and potential access to private networks, metadata services and redirects; HTTPS
 validation is not an SSRF or egress firewall. Git revisions are not automatically
