@@ -87,7 +87,18 @@ fn run() -> Result<String> {
     if let Some(path) = options.get("--artifact") {
         use sha2::{Digest, Sha256};
         use std::io::Read;
-        let mut file = std::fs::File::open(path)?;
+        ensure!(
+            std::fs::symlink_metadata(path)?.is_file(),
+            "invalid_artifact_file"
+        );
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = options.open(path)?;
         ensure!(
             file.metadata()?.is_file() && file.metadata()?.len() <= 1024 * 1024 * 1024,
             "artifact_size_limit"

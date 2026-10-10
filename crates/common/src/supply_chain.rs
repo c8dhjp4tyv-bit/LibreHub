@@ -34,6 +34,10 @@ pub struct BuildEnvironmentIdentity {
     pub writable_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_date_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selinux_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apparmor_profile: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -225,7 +225,7 @@ pub async fn evidence(
 async fn provenance(
     State(store): State<Store>,
     Path((app, id)): Path<(String, String)>,
-) -> Result<Json<PublicEvidence>, ApiError> {
+) -> Result<Response, ApiError> {
     let id = id.parse().map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -233,7 +233,14 @@ async fn provenance(
             "Release ID must be a UUID",
         )
     })?;
-    Ok(Json(evidence(&store, app, id).await?))
+    Ok((
+        [
+            ("cache-control", "no-store"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        Json(evidence(&store, app, id).await?),
+    )
+        .into_response())
 }
 async fn download(
     State(store): State<Store>,

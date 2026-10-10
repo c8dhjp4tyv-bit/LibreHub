@@ -34,7 +34,8 @@ def main():
         if os.environ.get('LIBREHUB_M6_HARDENED')=='1':
             env['LIBREHUB_DOCKER']='podman';env['LIBREHUB_WORKER_ISOLATION']='hardened';env['LIBREHUB_SUPPLY_CHAIN_POLICY']='enforce'
         runtime=env.get('LIBREHUB_DOCKER','docker');image=env.get('LIBREHUB_WORKER_IMAGE','librehub-worker:m1')
-        env['LIBREHUB_ALLOWED_WORKER_IMAGE_IDS']=run([runtime,'image','inspect','--format={{.Id}}',image],env)
+        image_id=run([runtime,'image','inspect','--format={{.Id}}',image],env)
+        env['LIBREHUB_ALLOWED_WORKER_IMAGE_IDS']=image_id if image_id.startswith('sha256:') else 'sha256:'+image_id
         admin=ROOT/'target/debug/librehub-admin';verifier=ROOT/'target/debug/librehub-verify'
         keys=json.loads(run([admin,'attestor','provision',env['LIBREHUB_ATTESTOR_KEY_FILE'],env['LIBREHUB_ATTESTOR_KEYS_FILE']],env))
         (proof/'trusted-keys.json').write_text(json.dumps(keys))

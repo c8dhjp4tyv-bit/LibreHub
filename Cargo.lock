@@ -1035,6 +1035,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "getrandom 0.4.3",
+ "libc",
  "librehub-common",
  "librehub-validator",
  "serde_json",

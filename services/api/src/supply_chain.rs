@@ -270,6 +270,13 @@ impl Store {
                         });
                     }
                     let env = p.build_definition.internal_parameters;
+                    if env.builder_version.contains("+dirty") {
+                        violations.push(PolicyViolation {
+                            code: "builder_implementation_unpinned".into(),
+                            message: "The builder was compiled from an uncommitted working tree."
+                                .into(),
+                        });
+                    }
                     if env.isolation != IsolationPolicy::Hardened
                         || !self.allowed_images.contains(&env.image_config_digest)
                     {

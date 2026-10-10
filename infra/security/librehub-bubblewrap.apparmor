@@ -1,0 +1,29 @@
+#include <tunables/global>
+# Outer OCI limits/rootfs/network policy remain mandatory. Mount permissions are
+# restricted to sandbox filesystems and bind/remount operations needed by bubblewrap.
+profile librehub-m6-bubblewrap flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  file,
+  network,
+  capability,
+  userns,
+  mount fstype=proc,
+  mount fstype=tmpfs,
+  mount fstype=devpts,
+  mount options=(bind),
+  mount options=(rbind),
+  mount options=(remount,bind),
+  mount options=(remount,bind,ro),
+  mount options=(remount,bind,rw),
+  mount options=(remount,bind,ro,nosuid,nodev),
+  mount options=(remount,bind,ro,nosuid,nodev,noexec),
+  umount,
+  pivot_root,
+  signal (send,receive) peer=librehub-m6-bubblewrap,
+  ptrace (read,trace) peer=librehub-m6-bubblewrap,
+  deny /proc/sys/** w,
+  deny /proc/*/mem rw,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/fs/cgroup/** w,
+}

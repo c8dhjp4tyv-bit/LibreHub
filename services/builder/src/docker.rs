@@ -87,6 +87,28 @@ impl DockerExecutor {
     }
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.config.binary);
+        // Runtime clients receive connection/runtime settings only, never publisher,
+        // API or attestor credentials that Podman might otherwise copy from the host.
+        cmd.env_clear();
+        for name in [
+            "PATH",
+            "HOME",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+            "CONTAINERS_CONF",
+            "CONTAINERS_STORAGE_CONF",
+            "CONTAINERS_REGISTRIES_CONF",
+            "REGISTRY_AUTH_FILE",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
+            }
+        }
         cmd.stdin(Stdio::null()).kill_on_drop(true);
         cmd
     }
@@ -115,10 +137,20 @@ impl DockerExecutor {
     }
     async fn environment(&self, job: &crate::BuildJob) -> anyhow::Result<BuildEnvironmentIdentity> {
         let podman = self.config.binary.file_name().and_then(|n| n.to_str()) == Some("podman");
+        let mut selinux_type = None;
+        let mut apparmor_profile = None;
         if self.config.isolation == IsolationPolicy::Hardened {
             let info: serde_json::Value =
                 serde_json::from_str(&self.metadata(&["info", "--format=json"]).await?)?;
             let host = &info["host"];
+            if host["security"]["apparmorEnabled"] == true {
+                apparmor_profile = Some("librehub-m6-bubblewrap".to_owned());
+            }
+            // Maintained container-selinux domain for nested user namespaces;
+            // preserve SELinux/MCS rather than disabling labeling.
+            if host["security"]["selinuxEnabled"] == true {
+                selinux_type = Some("container_userns_t".to_owned());
+            }
             if host["security"]["rootless"] != true
                 || host["security"]["seccompEnabled"] != true
                 || host["cgroupVersion"] != "v2"
@@ -129,6 +161,13 @@ impl DockerExecutor {
         let image = self
             .metadata(&["image", "inspect", "--format={{.Id}}", &self.config.image])
             .await?;
+        // Docker includes the algorithm prefix; Podman reports the same OCI
+        // configuration digest as bare hex. Normalize that representation only.
+        let image = if librehub_common::valid_checksum(&image) {
+            format!("sha256:{image}")
+        } else {
+            image
+        };
         if !image
             .strip_prefix("sha256:")
             .is_some_and(librehub_common::valid_checksum)
@@ -170,6 +209,8 @@ impl DockerExecutor {
             isolation: self.config.isolation,
             network: self.config.network.clone(),
             source_date_epoch: Some(1),
+            selinux_type,
+            apparmor_profile,
             writable_bytes: if self.config.isolation == IsolationPolicy::Hardened {
                 self.config.writable_bytes
             } else {
@@ -322,6 +363,12 @@ impl DockerExecutor {
                 .iter()
                 .position(|a| a == &environment.image_config_digest)
                 .context("Missing image argument")?;
+            if let Some(label) = &environment.selinux_type {
+                args.insert(image_index, format!("--security-opt=label=type:{label}"));
+            }
+            if let Some(profile) = &environment.apparmor_profile {
+                args.insert(image_index, format!("--security-opt=apparmor={profile}"));
+            }
             args.insert(image_index, "--read-only".into());
             args.insert(image_index, "--pid=private".into());
             args.insert(image_index, "--ipc=private".into());
@@ -332,7 +379,7 @@ impl DockerExecutor {
             args.insert(
                 image_index,
                 format!(
-                    "--tmpfs=/work:rw,size={},mode=0755,uid=10001,gid=10001",
+                    "--tmpfs=/work:rw,exec,nosuid,nodev,size={},mode=1777",
                     self.config.writable_bytes
                 ),
             );
@@ -362,6 +409,10 @@ impl DockerExecutor {
             bail_executor("Worker image substitution")?;
         }
         if hardened {
+            // Initialize trusted idle execution only; no source has been copied yet.
+            // Podman writes the actual OCI config at init, not at create.
+            self.run(&["init".into(), name.clone()], logs.clone(), cancel)
+                .await?;
             // Default seccomp must be present even if containers.conf is operator-modified.
             let config: serde_json::Value =
                 serde_json::from_str(&self.metadata(&["inspect", &name]).await?)
@@ -375,8 +426,30 @@ impl DockerExecutor {
             )
             .context("Invalid OCI configuration")?;
             verify_hardened_configuration(c, &spec)?;
+            if let Some(label) = &environment.selinux_type {
+                if spec["process"]["selinuxLabel"]
+                    .as_str()
+                    .and_then(|s| s.split(':').nth(2))
+                    != Some(label.as_str())
+                {
+                    bail_executor("Required nested-user-namespace SELinux domain unavailable")?;
+                }
+            }
+            if let Some(profile) = &environment.apparmor_profile {
+                if spec["process"]["apparmorProfile"].as_str() != Some(profile.as_str()) {
+                    bail_executor("Required AppArmor profile unavailable")?;
+                }
+            }
             self.run(&["start".into(), name.clone()], logs.clone(), cancel)
                 .await?;
+            if let Some(profile) = &environment.apparmor_profile {
+                let label = self
+                    .metadata(&["exec", &name, "/bin/cat", "/proc/self/attr/current"])
+                    .await?;
+                if label != format!("{profile} (enforce)") {
+                    bail_executor("AppArmor profile is not enforcing")?;
+                }
+            }
         }
         self.run(
             &[
@@ -583,6 +656,9 @@ fn verify_hardened_configuration(
     if c["HostConfig"]["Privileged"] != false
         || c["HostConfig"]["ReadonlyRootfs"] != true
         || c["HostConfig"]["NetworkMode"] != "none"
+        || c["HostConfig"]["PidMode"] != "private"
+        || c["HostConfig"]["IpcMode"] != "private"
+        || c["HostConfig"]["UTSMode"] != "private"
         || c["HostConfig"]["SecurityOpt"]
             .as_array()
             .is_none_or(|opts| {
@@ -608,9 +684,12 @@ fn verify_hardened_configuration(
             .zip(spec["linux"]["resources"]["cpu"]["period"].as_i64())
             .is_none_or(|(q, p)| p <= 0 || q != 2 * p)
         || spec["process"]["user"]["uid"] != 10001
-        || spec["process"]["capabilities"]["effective"]
-            .as_array()
-            .is_none_or(|caps| !caps.is_empty())
+        || spec["process"]["capabilities"]
+            .as_object()
+            .is_none_or(|caps| {
+                caps.values()
+                    .any(|value| value.as_array().is_none_or(|values| !values.is_empty()))
+            })
     {
         bail!("Hardened seccomp or finite resources unavailable");
     }
@@ -1056,7 +1135,7 @@ mod hardened_policy_tests {
     use serde_json::{Value, json};
     fn valid() -> (Value, Value) {
         (
-            json!({"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"NetworkMode":"none","SecurityOpt":["no-new-privileges=true","unmask=/proc/*"]},"Mounts":[{"Type":"tmpfs","Destination":"/work"}]}),
+            json!({"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"NetworkMode":"none","PidMode":"private","IpcMode":"private","UTSMode":"private","SecurityOpt":["no-new-privileges=true","unmask=/proc/*"]},"Mounts":[{"Type":"tmpfs","Destination":"/work"}]}),
             json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"},"resources":{"memory":{"limit":4294967296u64},"pids":{"limit":512},"cpu":{"quota":200000,"period":100000}}},"process":{"noNewPrivileges":true,"user":{"uid":10001},"capabilities":{"effective":[]}}}),
         )
     }

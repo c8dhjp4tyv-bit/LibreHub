@@ -26,9 +26,16 @@ pub fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path)?;
     ensure!(meta.is_file() && meta.len() <= limit as u64, "invalid_file");
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    ensure!(file.metadata()?.is_file(), "invalid_file");
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= limit, "size_limit");
     Ok(bytes)
 }

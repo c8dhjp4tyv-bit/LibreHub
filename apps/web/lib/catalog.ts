@@ -166,7 +166,7 @@ export const getCatalog = cache(async <T>(path: string): Promise<T | null> => {
   let response: Response;
   try {
     response = await fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
-      next: { revalidate: 5 },
+      ...(path.endsWith("/provenance") ? { cache: "no-store" as const } : { next: { revalidate: 5 } }),
       signal: AbortSignal.timeout(8000),
     });
   } catch {
