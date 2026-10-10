@@ -426,19 +426,18 @@ impl DockerExecutor {
             )
             .context("Invalid OCI configuration")?;
             verify_hardened_configuration(c, &spec)?;
-            if let Some(label) = &environment.selinux_type {
-                if spec["process"]["selinuxLabel"]
+            if let Some(label) = &environment.selinux_type
+                && spec["process"]["selinuxLabel"]
                     .as_str()
                     .and_then(|s| s.split(':').nth(2))
                     != Some(label.as_str())
-                {
-                    bail_executor("Required nested-user-namespace SELinux domain unavailable")?;
-                }
+            {
+                bail_executor("Required nested-user-namespace SELinux domain unavailable")?;
             }
-            if let Some(profile) = &environment.apparmor_profile {
-                if spec["process"]["apparmorProfile"].as_str() != Some(profile.as_str()) {
-                    bail_executor("Required AppArmor profile unavailable")?;
-                }
+            if let Some(profile) = &environment.apparmor_profile
+                && spec["process"]["apparmorProfile"].as_str() != Some(profile.as_str())
+            {
+                bail_executor("Required AppArmor profile unavailable")?;
             }
             self.run(&["start".into(), name.clone()], logs.clone(), cancel)
                 .await?;
