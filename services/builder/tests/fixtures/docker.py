@@ -14,7 +14,11 @@ args = sys.argv[1:]
 mode = (root / "mode").read_text()
 with (root / "calls").open("a") as calls:
     calls.write(json.dumps(args) + "\n")
-if args[0] == "create":
+if args[0] == "image":
+    print("sha256:" + "a" * 64)
+elif args[0] == "run":
+    print("flatpak-builder 1.4.4\n" + "b" * 64 + "\n" + "c" * 64 + "\n6eb989986df74a9e18ad77a3271e0a00910ea3f791a38a8eb228700eb4dd98e2  /usr/local/bin/librehub-build")
+elif args[0] == "create":
     (root / "container").write_text(args[args.index("--name") + 1])
 elif args[0] == "start":
     if mode in ("wait", "timeout"):
@@ -31,7 +35,7 @@ elif args[0] == "start":
         print("warning", file=sys.stderr, flush=True)
         # Simulate start -a succeeding despite a nonzero container exit code.
 elif args[0] == "inspect":
-    print("23" if mode == "failure" else "0")
+    print("sha256:" + "a" * 64 if "--format={{.Image}}" in args else ("23" if mode == "failure" else "0"))
 elif args[0] == "cp" and args[-1] == "-":
     if mode == "oversize":
         for _ in range(10000):

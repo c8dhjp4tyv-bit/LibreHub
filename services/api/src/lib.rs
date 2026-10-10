@@ -18,3 +18,6 @@ pub mod catalog_worker;
 pub mod security_http;
 pub mod security_store;
 pub mod security_worker;
+
+pub mod supply_chain;
+pub mod supply_chain_http;

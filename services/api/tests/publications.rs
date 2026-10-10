@@ -116,6 +116,7 @@ async fn succeeded(store: &Store) -> BuildId {
             id,
             BuildStatus::Succeeded,
             Some(BuildResult {
+                environment: None,
                 exit_code: Some(0),
                 artifacts: vec![Artifact {
                     path: format!("builds/{id}/artifacts/application.flatpak"),

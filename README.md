@@ -320,3 +320,9 @@ and [m5-verification.md](docs/m5-verification.md).
 M1 keeps its bounded bundle artifact guarantees. M2 reconstructs a private OSTree
 repository from a verified bundle using `flatpak build-import-bundle`; flat-manager
 manages commit rewriting/signing, publication and summary refresh. Developer projects and authentication are implemented in M3. Catalog indexing and store in M4. Trust, verification, SBOMs, permission diffing, and moderation are implemented in M5. Hardened multi-tenant isolation and other package formats remain deferred.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](docs/supply-chain.md), [attestations and offline verification](docs/attestations.md), [worker isolation](docs/build-isolation.md), [rebuild verification](docs/reproducible-builds.md), and [verification/recovery](docs/m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

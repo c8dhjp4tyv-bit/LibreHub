@@ -3,6 +3,7 @@ name = "librehub-api"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+librehub-supply-chain.workspace = true
 librehub-common.workspace = true
 librehub-validator.workspace = true
 librehub-builder.workspace = true

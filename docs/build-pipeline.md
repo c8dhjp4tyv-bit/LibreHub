@@ -96,3 +96,9 @@ files into `/work/source`, with the normalized `/work/manifest.json`. There is n
 host checkout mount. Source-stage failures appear in project history. A queued
 build cannot silently use a different snapshot after restart. See
 [source-integration.md](source-integration.md).
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

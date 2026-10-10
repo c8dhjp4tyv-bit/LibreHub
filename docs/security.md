@@ -4,8 +4,8 @@ M1 is intended for a trusted development operator on a dedicated Linux build hos
 Manifest build commands execute arbitrary code. Validation improves developer
 feedback and blocks obvious unsafe configuration; it is not a complete security
 policy. M3 supplies bearer authentication, project/build ownership and bounded developer
-admission. Scanning and hardened VM isolation remain later milestones (including
-M5). Keep the API on a dedicated host with TLS/gateway rate and egress controls.
+admission. M5 provides bounded vulnerability analysis; a VM isolation boundary remains
+unimplemented. Keep the API on a dedicated host with TLS/gateway rate and egress controls.
 
 ## Container boundary
 
@@ -210,3 +210,9 @@ Report rate limits use the socket peer IP by default. Set
 `X-Forwarded-For` from those peers. The chain is walked from right to left up
 to the first untrusted address; proxies must append the connecting client IP.
 Unidentified store callers share a per-app cap of three reports per 24 hours.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

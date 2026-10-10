@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
+# A fixed, recorded epoch removes supervisor-copy timestamps from builder inputs.
+export SOURCE_DATE_EPOCH=1
 arch="$1"
 app_id="$2"
 # A fixed manifest path and argument arrays keep shell metacharacters out of invocations.
@@ -11,6 +13,6 @@ flatpak info --user --arch="$arch" "$runtime//$version" >/dev/null
 flatpak info --user --arch="$arch" "$sdk//$version" >/dev/null
 mkdir -p /work/run /work/output
 chmod 700 /work/run
-flatpak-builder --user --arch="$arch" --sandbox --disable-rofiles-fuse \
+flatpak-builder --override-source-date-epoch=1 --user --arch="$arch" --sandbox --disable-rofiles-fuse \
     --force-clean --repo=/work/repo --default-branch=master /work/build /work/manifest.json
 flatpak build-bundle --arch="$arch" /work/repo /work/output/application.flatpak "$app_id" "$branch"

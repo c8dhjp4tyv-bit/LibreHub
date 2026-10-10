@@ -7,11 +7,19 @@ use librehub_common::{
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.len() == 4 && args[0] == "attestor" && args[1] == "provision" {
+        let bundle = librehub_supply_chain::provision(
+            std::path::Path::new(&args[2]),
+            std::path::Path::new(&args[3]),
+        )?;
+        println!("{}", serde_json::to_string(&bundle)?);
+        return Ok(());
+    }
     let data = std::env::var("LIBREHUB_DATA_DIR").unwrap_or_else(|_| "data".into());
     let database = std::env::var("LIBREHUB_DATABASE_PATH")
         .ok()
         .map(std::path::PathBuf::from);
-    let store = Store::open_at(std::path::Path::new(&data), database.as_deref())?;
+    let mut store = Store::open_at(std::path::Path::new(&data), database.as_deref())?;
 
     if args.is_empty() {
         print_usage();
@@ -19,6 +27,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let result = match args[0].as_str() {
+        "builds" if args.len() == 3 && args[1] == "verify-reproducibility" => {
+            store.configure_attestor().await?;
+            serde_json::to_value(
+                store
+                    .verify_reproducibility(
+                        args[2].parse()?,
+                        librehub_api::config::AppConfig::from_env()?.builder,
+                    )
+                    .await?,
+            )?
+        }
+        "attestations" if args.len() == 2 && args[1] == "retry" => {
+            store.configure_attestor().await?;
+            store.run_retry_attestations().await?;
+            serde_json::json!({"attestations":"requeued"})
+        }
         "catalog" if args.len() >= 2 && args[1] == "rebuild" => {
             store.catalog_rebuild().await?;
             serde_json::json!({"catalog": "requeued"})
@@ -127,6 +151,9 @@ async fn main() -> anyhow::Result<()> {
 fn print_usage() {
     eprintln!(
         r#"Usage:
+  librehub-admin attestor provision <PRIVATE_KEY_FILE> <PUBLIC_BUNDLE_FILE>
+  librehub-admin attestations retry
+  librehub-admin builds verify-reproducibility <BUILD_ID>
   librehub-admin catalog rebuild
   librehub-admin catalog moderate <APP_ID> <ACTION> <REASON> [--public-note NOTE] [--internal-note NOTE]
   librehub-admin create-developer <NAME>

@@ -100,3 +100,9 @@ project UUIDs, display name, immutable source repository/commit and declared lic
 are intentionally public. API tokens/webhooks/audit/policy remain private. Archived
 projects remain marked and installable with M3's retained-history/manual-publish
 semantics. See metadata.md for accepted standard files and catalog.md for public API.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

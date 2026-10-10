@@ -8,6 +8,7 @@ import {
   type App,
   type Page,
   type Release,
+  type SupplyChainEvidence,
   date,
   commitLink,
 } from "../../../lib/catalog";
@@ -19,6 +20,7 @@ import {
   TrustBadge,
   SecurityDetailsSection,
 } from "../../../components/store";
+import { BuildProvenance } from "../../../components/build-provenance";
 import { ReportForm } from "../../../components/report-form";
 type Props = {
   params: Promise<{ app_id: string }>;
@@ -60,6 +62,7 @@ export default async function AppPage(props: Props) {
       ? app.current_stable_release
       : app.current_beta_release;
   if (!release) notFound();
+  const evidence = await getCatalog<SupplyChainEvidence>(`/api/v1/catalog/apps/${encodeURIComponent(app.app_id)}/releases/${encodeURIComponent(release.publication_id)}/provenance`);
   const commit = commitLink(release.source_url, release.source_commit);
   return (
     <>
@@ -181,6 +184,7 @@ export default async function AppPage(props: Props) {
             </p>
           </section>
           <SecurityDetailsSection release={release} trust={app.trust} />
+          <BuildProvenance release={release} evidence={evidence} />
           <section>
             <h2>Application permissions</h2>
             {app.current_releases.map((r) => (

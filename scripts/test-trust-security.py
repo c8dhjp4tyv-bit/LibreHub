@@ -191,7 +191,9 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         sbom_bytes = public_raw(f'/api/v1/catalog/apps/{APP}/releases/{pub1_id}/sbom/download')
         sbom_json = json.loads(sbom_bytes.decode('utf-8'))
         assert sbom_json['spdxVersion'] == 'SPDX-2.3'
-        assert sbom_json['name'] == f"{APP}-{manifest['runtime-version']}"
+        assert sbom_json['name'] == f"{APP}-1.0.0"
+        assert sbom_json['packages'][0]['versionInfo'] == '1.0.0'
+        assert any(p['name'] == manifest['runtime'] and p['versionInfo'] == manifest['runtime-version'] for p in sbom_json['packages'])
         assert len(sbom_json['packages']) >= 1
         assert hashlib.sha256(sbom_bytes).hexdigest() == sec_details['sbom_sha256']
         assert sbom_json['packages'][0]['checksums'][0]['checksumValue'] == pub1['result']['published_ref']['commit']

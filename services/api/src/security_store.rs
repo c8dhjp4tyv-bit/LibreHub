@@ -769,16 +769,32 @@ impl Store {
             return Ok(None);
         }
 
-        // Secure path validation: ensure it stays within data_dir
-        let full_path = data_dir.join(&rel_path);
-        let canonical_dir = tokio::fs::canonicalize(data_dir).await?;
-        let canonical_file = tokio::fs::canonicalize(&full_path).await?;
         ensure!(
-            canonical_file.starts_with(&canonical_dir),
-            "Path traversal rejected"
+            rel_path == format!("security/{publication_id}/sbom.spdx.json"),
+            "Invalid controlled SBOM path"
         );
-
-        let bytes = tokio::fs::read(&canonical_file).await?;
+        let details = self
+            .get_release_security_details(publication_id)
+            .await?
+            .context("SBOM metadata missing")?;
+        let root = data_dir.to_owned();
+        let bytes = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let file = librehub_publisher::artifact::controlled_file(&root, &rel_path)?;
+            ensure!(
+                file.metadata()?.len() <= 10 * 1024 * 1024,
+                "SBOM size limit"
+            );
+            let mut bytes = Vec::new();
+            file.take(10 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() <= 10 * 1024 * 1024
+                    && format!("{:x}", Sha256::digest(&bytes)) == details.sbom_sha256,
+                "SBOM digest mismatch"
+            );
+            Ok::<_, anyhow::Error>(bytes)
+        })
+        .await??;
         Ok(Some(bytes))
     }
 

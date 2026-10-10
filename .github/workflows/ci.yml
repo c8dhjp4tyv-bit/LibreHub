@@ -1,4 +1,4 @@
-name: M1, M2, M3, M4 and M5 checks
+name: M1–M6 checks
 on:
   push:
   pull_request:
@@ -11,26 +11,30 @@ jobs:
   rust:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+      - name: Independent upstream attestation schema validation
+        run: |
+          python3 -m pip install --break-system-packages protobuf==6.33.5 jsonschema==4.25.1
+          python3 scripts/validate-attestation.py services/supply-chain/tests/fixtures/build.json
       - run: docker compose config --quiet
       - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/test-trust-security.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
   web:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
@@ -43,13 +47,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Make room for the Flatpak SDK image
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: infra/docker/worker.Dockerfile
@@ -57,17 +61,17 @@ jobs:
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: worker
       # Flatpak requires nested unprivileged user namespaces. This runner is disposable.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: cargo test -p librehub-builder --test flatpak -- --ignored --nocapture
+      - run: cargo test -p librehub-builder --test flatpak builds_hello_into_a_real_bundle -- --ignored --nocapture
       - name: Install real Flatpak client and OSTree tooling
         run: sudo apt-get update && sudo apt-get install -y flatpak ostree gnupg
       - name: Build pinned flat-manager
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: infra/docker/flat-manager.Dockerfile
@@ -86,21 +90,23 @@ jobs:
         run: |
           . data/dev/publisher.env
           python3 scripts/test-publish-install.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:
-          name: signed-flatpak-installation-proof
+          name: signed-flatpak-installation-proof-${{ github.sha }}
+          retention-days: 7
           path: data/e2e-proof.json
       - name: Real Git developer, signed webhook, recovery, publish and install proof
         run: |
           . data/dev/publisher.env
           python3 scripts/test-developer-platform.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:
-          name: developer-platform-git-workflow-proof
+          name: developer-platform-git-workflow-proof-${{ github.sha }}
+          retention-days: 7
           path: data/m3-proof.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
@@ -115,10 +121,11 @@ jobs:
         run: |
           . data/dev/publisher.env
           python3 scripts/test-public-store.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:
-          name: public-store-signed-installation-proof
+          name: public-store-signed-installation-proof-${{ github.sha }}
+          retention-days: 7
           path: |
             data/m4-proof.json
             data/m4-store-mobile.png
@@ -126,11 +133,43 @@ jobs:
         run: |
           . data/dev/publisher.env
           python3 scripts/test-trust-security.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:
-          name: trust-security-moderation-proof
+          name: trust-security-moderation-proof-${{ github.sha }}
+          retention-days: 7
           path: data/m5-proof.json
+      - name: Install independent schema validators
+        run: python3 -m pip install --break-system-packages protobuf==6.33.5 jsonschema==4.25.1 spdx-tools==0.8.3
+      - name: Real build provenance, DSSE/OpenSSL verification, tampering, signed install and reproducibility fixtures
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-supply-chain.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: supply-chain-evidence-${{ github.sha }}
+          path: data/m6-proof/
+          retention-days: 7
+      - name: Prepare the rootless Podman worker and delegated cgroups
+        run: |
+          sudo apt-get update && sudo apt-get install -y podman
+          sudo loginctl enable-linger "$(id -un)"
+          docker save librehub-worker:m1 | podman load
+      - name: Real hardened rootless worker and enforced attested publication acceptance
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          . data/dev/publisher.env
+          LIBREHUB_DOCKER=podman cargo test -p librehub-builder --test flatpak builds_hello_under_hardened_rootless_podman -- --ignored --nocapture
+          LIBREHUB_DOCKER=podman cargo test -p librehub-builder --test flatpak hardened_cancellation_and_abandoned_worker_cleanup -- --ignored --nocapture
+          LIBREHUB_M6_HARDENED=1 python3 scripts/test-supply-chain.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hardened-supply-chain-evidence-${{ github.sha }}
+          path: data/m6-proof/
+          retention-days: 7
       - name: Service diagnostics
         if: failure()
         run: docker compose logs --tail 150 flat-manager repository-http postgres repository-bootstrap

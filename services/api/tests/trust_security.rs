@@ -72,6 +72,7 @@ async fn publish_app(
             build.id,
             BuildStatus::Succeeded,
             Some(BuildResult {
+                environment: None,
                 exit_code: Some(0),
                 artifacts: vec![Artifact {
                     path: format!("builds/{}/artifacts/application.flatpak", build.id),

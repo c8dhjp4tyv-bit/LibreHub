@@ -192,6 +192,7 @@ impl BuildExecutor for Fake {
                     .unwrap();
                 tokio::fs::write(&full, b"fake bundle").await.unwrap();
                 Ok(BuildResult {
+                    environment: None,
                     exit_code: Some(0),
                     artifacts: vec![Artifact {
                         path,
@@ -467,6 +468,7 @@ async fn bounded_logs_and_queue_and_cancellation_race() {
             id,
             BuildStatus::Succeeded,
             Some(BuildResult {
+                environment: None,
                 exit_code: Some(0),
                 artifacts: vec![],
             }),
