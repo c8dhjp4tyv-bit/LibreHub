@@ -301,6 +301,9 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         assert report['status'] == 'open'
         report_id = report['id']
 
+        # The offline CLI takes the same exclusive store lock as the API.
+        # Stop the supervisor before CLI report resolution and moderation.
+        api.stop()
         # List reports via admin CLI
         reports_list = json.loads(run([admin, 'reports', 'list', '--status', 'open'], env))
         assert any(r['id'] == report_id for r in reports_list)
@@ -321,6 +324,7 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
             '--internal-note', 'Triggered by user report'
         ], env))
         assert mod_event['action'] == 'restrict'
+        api.start()
 
         # Restricted apps MUST be hidden from catalog lists & search
         apps_list = public('/api/v1/catalog/apps')
@@ -335,10 +339,12 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
         assert 'Temporarily restricted' in app_direct['trust']['moderation_notice']
 
         # Step B: Apply moderation: removed
+        api.stop()
         json.loads(run([
             admin, 'catalog', 'moderate', APP, 'remove', 'malware_report',
             '--public-note', 'Application removed for safety'
         ], env))
+        api.start()
 
         # Direct app lookup now returns 404
         try:
@@ -348,10 +354,12 @@ with tempfile.TemporaryDirectory(prefix='librehub-m5-') as temporary:
             assert err.code == 404
 
         # Step C: Re-instate app
+        api.stop()
         json.loads(run([
             admin, 'catalog', 'moderate', APP, 'restore', 'malware_report',
             '--public-note', 'Reinstated after review'
         ], env))
+        api.start()
 
         # Direct app lookup succeeds again and appears in search
         app_reinstated = public(f'/api/v1/catalog/apps/{APP}')
