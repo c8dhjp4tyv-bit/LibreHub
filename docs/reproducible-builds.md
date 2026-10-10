@@ -7,6 +7,12 @@ LIBREHUB_DATA_DIR=data ./target/debug/librehub-admin \
   builds verify-reproducibility BUILD_UUID
 ```
 
+The trusted build helper sets `SOURCE_DATE_EPOCH=1` and explicitly overrides
+Flatpak-builder's manifest-mtime-derived epoch. This is a normalization input,
+not a claim about the source commit date; it is recorded in build environment
+parameters. A clean image probe verifies the helper digest against the supervisor
+implementation before accepting its environment evidence.
+
 The operator command retains the original build and records a new build UUID,
 original snapshot/provenance, selected image content ID, runtime/SDK and isolation
 configuration. It verifies the retained snapshot and requires the second actual

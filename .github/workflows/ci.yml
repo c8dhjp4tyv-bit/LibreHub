@@ -146,7 +146,7 @@ jobs:
           . data/dev/publisher.env
           python3 scripts/test-supply-chain.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: success()
+        if: always()
         with:
           name: supply-chain-evidence-${{ github.sha }}
           path: data/m6-proof/

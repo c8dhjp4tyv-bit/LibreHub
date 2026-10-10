@@ -32,6 +32,8 @@ pub struct BuildEnvironmentIdentity {
     pub isolation: IsolationPolicy,
     pub network: String,
     pub writable_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_date_epoch: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

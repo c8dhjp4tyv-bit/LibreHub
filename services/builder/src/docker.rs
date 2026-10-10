@@ -138,11 +138,16 @@ impl DockerExecutor {
         let arch = job.architecture.to_string();
         // Clean trusted image probe receives no source, manifest code, mounts or credentials.
         let output = self.metadata(&["run","--rm","--network=none","--cap-drop=ALL","--security-opt=no-new-privileges=true","--entrypoint=/bin/sh",&image,"-c",
-            "flatpak-builder --version && flatpak info --user --show-commit --arch=\"$1\" \"$2//$4\" && flatpak info --user --show-commit --arch=\"$1\" \"$3//$4\"", "probe", &arch,&job.manifest.runtime,&job.manifest.sdk,&job.manifest.runtime_version]).await?;
+            "flatpak-builder --version && flatpak info --user --show-commit --arch=\"$1\" \"$2//$4\" && flatpak info --user --show-commit --arch=\"$1\" \"$3//$4\" && sha256sum /usr/local/bin/librehub-build", "probe", &arch,&job.manifest.runtime,&job.manifest.sdk,&job.manifest.runtime_version]).await?;
         let lines: Vec<_> = output.lines().collect();
-        if lines.len() != 3
+        let expected_helper = format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("../../../infra/docker/librehub-build"))
+        );
+        if lines.len() != 4
             || !librehub_common::valid_checksum(lines[1])
             || !librehub_common::valid_checksum(lines[2])
+            || lines[3].split_whitespace().next() != Some(expected_helper.as_str())
         {
             bail!("Pinned Flatpak environment unavailable");
         }
@@ -164,6 +169,7 @@ impl DockerExecutor {
             architecture: job.architecture,
             isolation: self.config.isolation,
             network: self.config.network.clone(),
+            source_date_epoch: Some(1),
             writable_bytes: if self.config.isolation == IsolationPolicy::Hardened {
                 self.config.writable_bytes
             } else {

@@ -637,6 +637,20 @@ async fn normalized_content(
         Duration::from_secs(60),
     )
     .await?;
+    let diagnostics = store
+        .data_dir
+        .join("builds")
+        .join(build.id.to_string())
+        .join("content-listing.txt");
+    if !diagnostics.exists() {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(diagnostics)?;
+        f.write_all(listing.as_bytes())?;
+        f.sync_all()?;
+    }
     Ok(crypto::sha256(listing.as_bytes()))
 }
 impl Store {

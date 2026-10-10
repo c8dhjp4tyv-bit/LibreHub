@@ -143,12 +143,23 @@ def main():
             # Crash after publication, then reconcile the same immutable evidence identity.
             stop(crash=True);start();again=request(path+'/attestation/download');assert again==bundle
             stop()
-            deterministic=json.loads(run([admin,'builds','verify-reproducibility',b['id']],env));assert deterministic['state']=='reproduced',deterministic
+            deterministic=json.loads(run([admin,'builds','verify-reproducibility',b['id']],env))
+            for role,build_id in [('original',b['id']),('rebuild',deterministic.get('rebuild_id'))]:
+                if build_id:
+                    content=work/'data/builds'/build_id/'content-listing.txt'
+                    if content.exists():(proof/(role+'-content.txt')).write_bytes(content.read_bytes())
+            (proof/'reproducibility.json').write_text(json.dumps(deterministic))
+            assert deterministic['state']=='reproduced',deterministic
             # Deliberately varying file contents must remain a visible mismatch.
             manifest_path=fixture.repo/'org.librehub.ProjectHello.json';manifest=json.loads(manifest_path.read_text());manifest['modules'][0]['build-commands'].append('date +%s%N > /app/non-deterministic');manifest_path.write_text(json.dumps(manifest));git(fixture.repo,'add','.');git(fixture.repo,'commit','-m','Deliberately nondeterministic fixture')
             start();nondeterministic_build=build();stop();nondeterministic=json.loads(run([admin,'builds','verify-reproducibility',nondeterministic_build['id']],env));assert nondeterministic['state']=='non_reproducible',nondeterministic
             report={'source_commit':b['provenance']['revision']['commit'],'source_snapshot':b['provenance']['snapshot']['sha256'],'build_id':b['id'],'artifact_sha256':b['result']['artifacts'][0]['sha256'],'publication_id':pub['id'],'published_checksum':commit,'ref':ref,'environment':b['result']['environment'],'attestor_key_id':keys['keys'][0]['key_id'],'independent_openssl':'passed','offline_verifier':'passed','tampering_rejected':tampering,'deterministic':deterministic,'nondeterministic':nondeterministic,'installed_output':output,'restart_evidence_identical':True,'signing_crash_stages':crashes,'commit_sha':run(['git','rev-parse','HEAD'],os.environ.copy())}
             (proof/'proof.json').write_text(json.dumps(report,indent=2));print(json.dumps(report))
+        except Exception:
+            import difflib
+            if (proof/'original-content.txt').exists() and (proof/'rebuild-content.txt').exists():
+                print(''.join(difflib.unified_diff((proof/'original-content.txt').read_text().splitlines(True),(proof/'rebuild-content.txt').read_text().splitlines(True),fromfile='original',tofile='rebuild')))
+            raise
         finally:
             stop();fixture.close();log.close()
 if __name__=='__main__':main()

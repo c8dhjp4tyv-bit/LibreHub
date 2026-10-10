@@ -26,7 +26,7 @@ args = sys.argv[1:]
 with (root / 'calls.jsonl').open('a') as f: f.write(json.dumps(args) + '\n')
 mode = (root / 'mode').read_text()
 if args[0] == 'image': print('sha256:' + 'a' * 64)
-elif args[0] == 'run': print('flatpak-builder 1.4.4\n' + 'b' * 64 + '\n' + 'c' * 64)
+elif args[0] == 'run': print('flatpak-builder 1.4.4\n' + 'b' * 64 + '\n' + 'c' * 64 + '\n6eb989986df74a9e18ad77a3271e0a00910ea3f791a38a8eb228700eb4dd98e2  /usr/local/bin/librehub-build')
 elif args[0] == 'create':
     (root / 'exists').touch()
     print('container-id')

@@ -68,6 +68,8 @@ async fn builds_hello_under_hardened_rootless_podman() {
     .unwrap();
     let executor = DockerExecutor::new(DockerConfig {
         binary: "podman".into(),
+        image: std::env::var("LIBREHUB_WORKER_IMAGE")
+            .unwrap_or_else(|_| "librehub-worker:m1".into()),
         isolation: IsolationPolicy::Hardened,
         ..Default::default()
     })

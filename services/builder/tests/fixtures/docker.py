@@ -17,7 +17,7 @@ with (root / "calls").open("a") as calls:
 if args[0] == "image":
     print("sha256:" + "a" * 64)
 elif args[0] == "run":
-    print("flatpak-builder 1.4.4\n" + "b" * 64 + "\n" + "c" * 64)
+    print("flatpak-builder 1.4.4\n" + "b" * 64 + "\n" + "c" * 64 + "\n6eb989986df74a9e18ad77a3271e0a00910ea3f791a38a8eb228700eb4dd98e2  /usr/local/bin/librehub-build")
 elif args[0] == "create":
     (root / "container").write_text(args[args.index("--name") + 1])
 elif args[0] == "start":
