@@ -20,7 +20,8 @@ pub fn validate(input: &str, format: ManifestFormat) -> Result<FlatpakManifest, 
     validate_context(input, format, false)
 }
 
-/// Same M1 policy with bounded local source paths enabled for prepared M3 snapshots.
+/// M1 policy with bounded local source paths and runtime filesystem permissions
+/// enabled for prepared project snapshots. Build-time grants remain unsupported.
 /// The source subsystem and worker must independently check file membership.
 pub fn validate_project(
     input: &str,
@@ -537,14 +538,14 @@ fn check_options(
                             for arg in args {
                                 if !arg.as_str().is_some_and(|s| {
                                     s.starts_with("--")
-                                        && !s.contains(['\n', '\0'])
-                                        && !s.starts_with("--filesystem=")
+                                        && !s.contains(['\n', '\r', '\0'])
+                                        && (local || !s.starts_with("--filesystem="))
                                 }) {
                                     error(
                                         errors,
                                         &path,
                                         "unsafe_finish_arg",
-                                        "Finish arguments must be flags; filesystem grants are unsupported in M1",
+                                        "Finish arguments must be flags without control characters; filesystem grants require a prepared project snapshot",
                                     );
                                 }
                             }
@@ -624,6 +625,41 @@ mod tests {
             let mut value: Value = serde_json::from_str(MANIFEST).unwrap();
             value["modules"] = replacement;
             assert!(validate(&value.to_string(), ManifestFormat::Json).is_err());
+        }
+    }
+    #[test]
+    fn project_runtime_permissions_do_not_enable_build_time_grants() {
+        let mut value: Value = serde_json::from_str(MANIFEST).unwrap();
+        value["finish-args"] = serde_json::json!([
+            "--share=network",
+            "--socket=wayland",
+            "--filesystem=xdg-download:ro",
+            "--filesystem=home",
+            "--device=all"
+        ]);
+        assert!(validate_project(&value.to_string(), ManifestFormat::Json).is_ok());
+        assert!(
+            validate(&value.to_string(), ManifestFormat::Json)
+                .unwrap_err()
+                .errors
+                .iter()
+                .any(|error| error.code == "unsafe_finish_arg")
+        );
+        value["modules"][0]["sources"] = serde_json::json!([{"type":"file","path":"hello.sh"}]);
+        assert!(validate_project(&value.to_string(), ManifestFormat::Json).is_ok());
+        assert!(validate(&value.to_string(), ManifestFormat::Json).is_err());
+
+        value["build-options"] = serde_json::json!({"build-args":["--filesystem=host"]});
+        assert!(validate_project(&value.to_string(), ManifestFormat::Json).is_err());
+        value.as_object_mut().unwrap().remove("build-options");
+        for arg in [
+            "home",
+            "--filesystem=home\n--share=network",
+            "--filesystem=home\r",
+            "--filesystem=home\0",
+        ] {
+            value["finish-args"] = serde_json::json!([arg]);
+            assert!(validate_project(&value.to_string(), ManifestFormat::Json).is_err());
         }
     }
     #[test]

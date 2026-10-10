@@ -132,3 +132,27 @@ install/canonical URLs. Permissions come from the exact published signed checksu
 source presentation metadata from the verified built tree tied to its pre-rewrite
 checksum. Catalog failure cannot roll back publication. See catalog.md, metadata.md,
 store.md and m4-verification.md for resource, restart and browser boundaries.
+
+## M5 trust, security and moderation boundary
+
+```mermaid
+flowchart TD
+    A["M2/M4 published release"] --> B["Security supervisor queue"]
+    B --> C["Permissions extraction & diffing"]
+    B --> D["SPDX 2.3 JSON SBOM generation"]
+    B --> E["OSV vulnerability provider"]
+    C & D & E --> F["Release security record"]
+    G["Publisher DNS TXT challenge"] --> H["Verified domain binding"]
+    I["Operator moderation & reports"] --> J["Catalog visibility gating"]
+    F & H & J --> K["Public trust summary & web store"]
+```
+
+`services/security` encapsulates security analysis and trust verification:
+- **Permission diffing**: Compares Flatpak `[Context]` and finish-args against the previous stable release, categorizing additions/modifications into neutral severity tiers (`none`, `low`, `moderate`, `significant`).
+- **SPDX 2.3 SBOM generator**: Produces canonical Software Bill of Materials documents cryptographically bound to publication ID, ref, commit hash, and OSTree checksum; stored under bounded filesystem paths (`data/security/<pub_id>/sbom.spdx.json`).
+- **Publisher domain verification**: Cryptographically random challenge tokens verified via bounded UDP DNS TXT lookups against authoritative resolvers, strictly validating RFC 1035 / RFC 1123 domain syntax and defending against SSRF and DNS rebinding.
+- **Vulnerability matching**: Asynchronous `VulnerabilityProvider` interface with OSV-compatible queries and deterministic test fixture support; upstream outages safely degrade to `analysis temporarily unavailable` rather than falsely claiming safety.
+
+The API runs a fifth durable supervisor (`security_worker`) polling queued publications. Security job failures or external feed outages never roll back signed publications. The catalog and store layer dynamically injects `TrustSummary`, displays trust badges, warns of significant permission escalations, and gates delisted or removed applications.
+
+See [trust.md](trust.md), [sbom.md](sbom.md), [vulnerability-analysis.md](vulnerability-analysis.md), [moderation.md](moderation.md), and [m5-verification.md](m5-verification.md).

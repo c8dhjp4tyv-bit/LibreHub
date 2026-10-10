@@ -1,7 +1,9 @@
 //! Public catalog domain and bounded extraction. Never expose internal platform records.
 pub mod extract;
 pub mod metadata;
-use librehub_common::{Architecture, RepositoryChannel, Timestamp};
+use librehub_common::{
+    Architecture, ReleaseSecurityDetails, RepositoryChannel, Timestamp, TrustSummary,
+};
 use serde::{Deserialize, Serialize};
 
 pub const CATEGORIES: &[&str] = &[
@@ -66,6 +68,8 @@ pub struct PublicRelease {
     pub version: String,
     pub release_notes: String,
     pub permissions: CatalogPermissions,
+    #[serde(default)]
+    pub security: Option<ReleaseSecurityDetails>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicCatalogCard {
@@ -81,6 +85,8 @@ pub struct PublicCatalogCard {
     pub architectures: Vec<Architecture>,
     pub channel: RepositoryChannel,
     pub archived: bool,
+    #[serde(default)]
+    pub trust: Option<TrustSummary>,
     pub updated_at: Timestamp,
     pub published_at: Timestamp,
 }

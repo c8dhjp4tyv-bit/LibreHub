@@ -8,11 +8,20 @@ import {
   PermissionList,
   ReleaseHistory,
   Pagination,
+  TrustBadge,
+  PermissionDiffNotice,
+  SecurityDetailsSection,
 } from "../components/store";
 import { ThemeToggle } from "../components/theme";
 import Loading from "../app/loading";
 import ErrorPage from "../app/error";
-import { commitLink, type Card, type Release } from "../lib/catalog";
+import {
+  commitLink,
+  type Card,
+  type Release,
+  type TrustSummary,
+  type PermissionDiff,
+} from "../lib/catalog";
 vi.mock("next/image", () => ({
   default: (props: React.ImgHTMLAttributes<HTMLImageElement>) =>
     React.createElement("img", { src: props.src, alt: props.alt }),
@@ -145,5 +154,97 @@ describe("store components", () => {
     expect(document.querySelector("script")).toBeNull();
     expect(document.querySelector("[onerror]")).toBeNull();
     expect(screen.getByText("<script>alert(1)</script>")).toBeVisible();
+  });
+  it("renders verified publisher trust badge with domain", () => {
+    const trust: TrustSummary = {
+      trust_state: "verified_publisher",
+      publisher_verification: "Verified domain: example.org",
+      source_available: true,
+      signed_repository: true,
+      security_analysis: "ready",
+      verified_domain: "example.org",
+      moderation_state: "normal",
+      moderation_notice: null,
+      latest_permission_change: "none",
+      known_vulnerabilities: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+    };
+    render(<TrustBadge trust={trust} />);
+    expect(screen.getByText(/Verified Publisher/)).toBeVisible();
+    expect(screen.getByText(/example.org/)).toBeVisible();
+  });
+  it("renders permission diff banner for significant permission changes", () => {
+    const diff: PermissionDiff = {
+      from_publication_id: "pub-1",
+      to_publication_id: "pub-2",
+      severity: "significant",
+      changed_network: { from: false, to: true },
+      added: {
+        network: true,
+        filesystem: ["home"],
+        devices: ["all"],
+        sockets: [],
+        dbus: [],
+        shared: [],
+        other: [],
+      },
+      removed: {
+        network: false,
+        filesystem: [],
+        devices: [],
+        sockets: [],
+        dbus: [],
+        shared: [],
+        other: [],
+      },
+      summary_notes: ["Broad filesystem access added: home"],
+      generated_at: "2026-01-01T00:00:00Z",
+    };
+    render(<PermissionDiffNotice diff={diff} />);
+    expect(screen.getByText(/SIGNIFICANT IMPACT/)).toBeVisible();
+    expect(screen.getByText("home")).toBeVisible();
+    expect(screen.getByText(/Broad filesystem access added/)).toBeVisible();
+  });
+  it("renders security vulnerability assessment and SBOM artifact links", () => {
+    const secRelease: Release = {
+      ...release,
+      security: {
+        publication_id: "pub-1",
+        app_id: "org.example.Test",
+        channel: "stable",
+        status: "ready",
+        sbom_format: "SPDX-2.3",
+        sbom_component_count: 42,
+        sbom_sha256: "c".repeat(64),
+        sbom_download_url: "/api/v1/catalog/apps/org.example.Test/releases/pub-1/sbom/download",
+        vulnerabilities_status: "vulnerable",
+        vulnerabilities_checked_at: "2026-01-01T00:00:00Z",
+        vulnerability_counts: { critical: 1, high: 0, medium: 0, low: 0, unknown: 0 },
+        findings: [
+          {
+            vulnerability_id: "GHSA-1234",
+            component_name: "openssl",
+            component_version: "1.1.1",
+            severity: "critical",
+            summary: "Buffer overflow vulnerability",
+            reference_url: "https://osv.dev/vulnerability/GHSA-1234",
+            source_provider: "osv",
+            checked_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        permissions_extracted_at: "2026-01-01T00:00:00Z",
+        permission_severity: "none",
+        permission_diff: null,
+      },
+    };
+    render(<SecurityDetailsSection release={secRelease} />);
+    expect(screen.getByText(/1 known vulnerability finding/)).toBeVisible();
+    expect(screen.getByText(/CRITICAL/)).toBeVisible();
+    expect(screen.getByText(/openssl @ 1.1.1/)).toBeVisible();
+    expect(screen.getByText(/Buffer overflow vulnerability/)).toBeVisible();
+    expect(screen.getByText(/42 package\(s\)/)).toBeVisible();
+    expect(screen.getByRole("link", { name: /Download SBOM/ })).toHaveAttribute(
+      "href",
+      "http://localhost:8080/api/v1/catalog/apps/org.example.Test/releases/pub-1/sbom/download",
+    );
   });
 });

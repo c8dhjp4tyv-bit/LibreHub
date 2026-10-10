@@ -16,7 +16,10 @@ import {
   PermissionList,
   ReleaseHistory,
   Pagination,
+  TrustBadge,
+  SecurityDetailsSection,
 } from "../../../components/store";
+import { ReportForm } from "../../../components/report-form";
 type Props = {
   params: Promise<{ app_id: string }>;
   searchParams: Promise<{ channel?: string; offset?: string }>;
@@ -70,6 +73,7 @@ export default async function AppPage(props: Props) {
             <span className="badge">
               {app.channel === "stable" ? "Stable" : "Beta preview"}
             </span>
+            {app.trust && <TrustBadge trust={app.trust} />}
             {app.archived && <span className="badge">Archived / inactive</span>}
           </div>
           <h1>{app.name}</h1>
@@ -93,6 +97,16 @@ export default async function AppPage(props: Props) {
           Install with Flatpak <span aria-hidden="true">↓</span>
         </a>
       </section>
+      {app.trust && app.trust.moderation_state === "restricted" && (
+        <p className="notice notice-restricted">
+          <strong>Catalog Notice:</strong> This application has been restricted by platform moderation: {app.trust.moderation_notice || "Restricted"}.
+        </p>
+      )}
+      {app.trust && app.trust.moderation_state === "under_review" && (
+        <p className="notice notice-warning">
+          <strong>Catalog Notice:</strong> This application is currently under operator review: {app.trust.moderation_notice || "Under review"}.
+        </p>
+      )}
       {app.channel === "beta" && (
         <p className="notice">
           This is a beta preview.{" "}
@@ -166,6 +180,7 @@ export default async function AppPage(props: Props) {
               client verifies the repository signing key.
             </p>
           </section>
+          <SecurityDetailsSection release={release} trust={app.trust} />
           <section>
             <h2>Application permissions</h2>
             {app.current_releases.map((r) => (
@@ -220,6 +235,16 @@ export default async function AppPage(props: Props) {
             </dd>
             <dt>Publisher</dt>
             <dd>{app.publisher.display_name}</dd>
+            <dt>Publisher verification</dt>
+            <dd>
+              {app.trust?.verified_domain ? (
+                <span className="badge badge-verified">
+                  ✓ {app.trust.publisher_verification}
+                </span>
+              ) : (
+                <span className="badge">Community (unverified domain)</span>
+              )}
+            </dd>
             <dt>License</dt>
             <dd>{app.license || "Not declared"}</dd>
             <dt>Version</dt>
@@ -253,9 +278,9 @@ export default async function AppPage(props: Props) {
             </a>
           )}
           <p className="muted">
-            Source provenance identifies the build input. It does not imply
-            publisher verification or a security audit.
+            Publisher verification confirms domain ownership. It does not certify that the application is completely free of defects or vulnerabilities.
           </p>
+          <ReportForm appId={app.app_id} />
         </aside>
       </div>
     </>

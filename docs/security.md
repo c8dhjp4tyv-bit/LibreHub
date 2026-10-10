@@ -55,6 +55,13 @@ build-args, BaseApps and runtime/extension builds are rejected. Remote file/arch
 sources require HTTPS URLs without credentials and SHA-256 checksums. Shell/build
 commands remain intentionally executable code inside the container.
 
+Prepared project snapshots may declare runtime filesystem permissions in
+`finish-args`, including `xdg-download:ro` and `home`. These describe access when
+the installed application runs; they do not add host mounts to build workers.
+Build-time `build-args` remain rejected and `flatpak-builder --sandbox` remains
+enabled. M5 extracts these permissions from the signed published metadata and
+compares them across releases.
+
 Default worker networking is `none`. Enabling `bridge` permits source downloads
 and potential access to private networks, metadata services and redirects; HTTPS
 validation is not an SSRF or egress firewall. Git revisions are not automatically
@@ -195,3 +202,11 @@ browser's future DNS. No backend screenshot SSRF/proxy surface is introduced.
 
 Review catalog.md/metadata.md/store.md for exact policy/limits and
 m4-verification.md for XSS, URL, visibility, persistence and signed-install evidence.
+
+### Report submission behind a proxy
+
+Report rate limits use the socket peer IP by default. Set
+`LIBREHUB_TRUSTED_PROXIES` to comma-separated proxy IP addresses to accept
+`X-Forwarded-For` from those peers. The chain is walked from right to left up
+to the first untrusted address; proxies must append the connecting client IP.
+Unidentified store callers share a per-app cap of three reports per 24 hours.

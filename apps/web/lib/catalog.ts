@@ -19,6 +19,7 @@ export interface Card {
   archived: boolean;
   updated_at: string;
   published_at: string;
+  trust?: TrustSummary;
 }
 export interface Permissions {
   network: boolean;
@@ -29,6 +30,76 @@ export interface Permissions {
   shared: string[];
   other: string[];
 }
+export interface PermissionDiff {
+  from_publication_id: string | null;
+  to_publication_id: string;
+  severity: "none" | "low" | "moderate" | "significant";
+  changed_network: { from: boolean; to: boolean } | null;
+  added: Permissions;
+  removed: Permissions;
+  summary_notes: string[];
+  generated_at: string;
+}
+export interface VulnerabilityFinding {
+  vulnerability_id: string;
+  component_name: string;
+  component_version: string;
+  severity: "unknown" | "low" | "medium" | "high" | "critical";
+  summary: string;
+  reference_url: string | null;
+  source_provider: string;
+  checked_at: string;
+}
+export interface ReleaseSecurityDetails {
+  publication_id: string;
+  app_id: string;
+  channel: string;
+  status: "pending" | "analyzing" | "ready" | "failed" | "unavailable";
+  sbom_format: string;
+  sbom_component_count: number;
+  sbom_sha256: string;
+  sbom_download_url: string;
+  vulnerabilities_status: "clean" | "vulnerable" | "pending" | "unavailable";
+  vulnerabilities_checked_at: string | null;
+  vulnerability_counts: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    unknown: number;
+  };
+  findings: VulnerabilityFinding[];
+  permissions_extracted_at: string;
+  permission_severity: "none" | "low" | "moderate" | "significant";
+  permission_diff: PermissionDiff | null;
+}
+export interface TrustSummary {
+  trust_state: "verified_publisher" | "community" | "unverified" | "restricted" | "removed";
+  publisher_verification: string;
+  verified_domain: string | null;
+  source_available: boolean;
+  signed_repository: boolean;
+  security_analysis: string;
+  known_vulnerabilities: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    unknown: number;
+  };
+  latest_permission_change: "none" | "low" | "moderate" | "significant";
+  moderation_state: "normal" | "under_review" | "restricted" | "removed";
+  moderation_notice: string | null;
+}
+export type ReportReason =
+  | "malware"
+  | "policy_violation"
+  | "copyright_infringement"
+  | "privacy_violation"
+  | "broken_build"
+  | "security_vulnerability"
+  | "impersonation"
+  | "other";
 export interface Release {
   publication_id: string;
   build_id: string;
@@ -42,6 +113,7 @@ export interface Release {
   version: string;
   release_notes: string;
   permissions: Permissions;
+  security?: ReleaseSecurityDetails;
 }
 export interface App extends Card {
   description: string;

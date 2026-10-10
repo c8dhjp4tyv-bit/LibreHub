@@ -818,6 +818,7 @@ dependencies = [
  "librehub-catalog",
  "librehub-common",
  "librehub-publisher",
+ "librehub-security",
  "librehub-source",
  "librehub-validator",
  "rusqlite",
@@ -902,6 +903,26 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "librehub-security"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "getrandom 0.4.3",
+ "librehub-common",
+ "librehub-publisher",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
