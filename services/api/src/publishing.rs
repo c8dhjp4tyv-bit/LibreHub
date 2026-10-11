@@ -144,6 +144,23 @@ impl Publishing {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Publication source disappeared"))?;
         let manifest = self.store.manifest(record.build_id).await?;
+        if (self.store.attestor.is_some() || self.store.supply_policy == SupplyChainPolicy::Enforce)
+            && !self.store.check_supply_policy(build.id).await?.allowed
+        {
+            // Only pre-side-effect admission can fail safely; preserve ambiguous remote states.
+            record.error = Some(PublishFailure {
+                code: "supply_chain_policy_denied".into(),
+                message: "Supply-chain policy denied publication".into(),
+                retryable: false,
+            });
+            if !record.create_requested && record.flat_manager_build_id.is_none() {
+                record.status = PublishStatus::Failed;
+            } else {
+                record.needs_attention = true;
+            }
+            self.store.save_publication(record).await?;
+            return Ok(());
+        }
         // A bounded retry loop reconciles persisted state before each subsequent attempt.
         for attempt in 0..3 {
             record.attempts = record.attempts.saturating_add(1);

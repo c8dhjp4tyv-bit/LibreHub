@@ -182,6 +182,8 @@ pub struct Artifact {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<BuildEnvironmentIdentity>,
     pub exit_code: Option<i32>,
     pub artifacts: Vec<Artifact>,
 }
@@ -258,3 +260,6 @@ mod tests {
         assert!("../../etc/passwd".parse::<BuildId>().is_err());
     }
 }
+
+mod supply_chain;
+pub use supply_chain::*;

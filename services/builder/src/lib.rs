@@ -55,3 +55,9 @@ pub trait BuildExecutor: Send + Sync {
     /// Remove abandoned execution environments before recovering persistent state.
     async fn cleanup(&self, id: BuildId) -> anyhow::Result<()>;
 }
+
+pub const IMPLEMENTATION_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+git.",
+    env!("LIBREHUB_BUILDER_REVISION")
+);

@@ -8,6 +8,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub enum AdmissionError {
     #[error("Build does not exist")]
     Missing,
+    #[error("Supply-chain policy denied publication")]
+    SupplyChainDenied,
     #[error("Only successful builds with one bundle can be published")]
     Ineligible,
     #[error("The application ID belongs to another developer")]
@@ -23,6 +25,11 @@ impl Store {
         id: BuildId,
         channel: RepositoryChannel,
     ) -> anyhow::Result<PublishRecord> {
+        if (self.attestor.is_some() || self.supply_policy == SupplyChainPolicy::Enforce)
+            && !self.check_supply_policy(id).await?.allowed
+        {
+            return Err(AdmissionError::SupplyChainDenied.into());
+        }
         self.run(move |db| {
             let tx = db.transaction()?;
             let (record, _) = enqueue(&tx, id, channel)?;
@@ -36,6 +43,28 @@ impl Store {
         event_id: SourceEventId,
         channel: RepositoryChannel,
     ) -> anyhow::Result<Option<PublishRecord>> {
+        if self.attestor.is_some() || self.supply_policy == SupplyChainPolicy::Enforce {
+            let event = self
+                .run(move |db| {
+                    Ok(db
+                        .query_row(
+                            "SELECT record,auto_publish_state FROM source_events WHERE id=?1",
+                            [event_id.to_string()],
+                            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                        )
+                        .optional()?)
+                })
+                .await?;
+            if let Some((raw, state)) = event {
+                if state != "pending" {
+                    return Ok(None);
+                }
+                let source: SourceEvent = serde_json::from_str(&raw)?;
+                if !self.check_supply_policy(source.build_id).await?.allowed {
+                    return Err(AdmissionError::SupplyChainDenied.into());
+                }
+            }
+        }
         self.run(move |db| {
             let tx = db.transaction()?;
             let (raw, state): (String, String) = tx.query_row(

@@ -2,7 +2,10 @@ use crate::{BuildExecutor, BuildJob, ExecutorError, LogSink};
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use chrono::Utc;
-use librehub_common::{Architecture, Artifact, BuildId, BuildLogEntry, BuildResult, LogStream};
+use librehub_common::{
+    Architecture, Artifact, BuildEnvironmentIdentity, BuildId, BuildLogEntry, BuildResult,
+    IsolationPolicy, LogStream,
+};
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Seek, Write},
@@ -26,6 +29,8 @@ pub struct DockerConfig {
     /// Only `none` (default) or `bridge`. Bridge allows source downloads.
     pub network: String,
     pub architecture: Architecture,
+    pub isolation: IsolationPolicy,
+    pub writable_bytes: u64,
 }
 impl Default for DockerConfig {
     fn default() -> Self {
@@ -36,6 +41,8 @@ impl Default for DockerConfig {
             max_artifact_bytes: 1024 * 1024 * 1024,
             network: "none".into(),
             architecture: Architecture::native(),
+            isolation: IsolationPolicy::Compatibility,
+            writable_bytes: 2 * 1024 * 1024 * 1024,
         }
     }
 }
@@ -44,6 +51,7 @@ struct PreparedArtifact {
     archive: PathBuf,
     destination: PathBuf,
     relative: String,
+    environment: BuildEnvironmentIdentity,
 }
 
 pub struct DockerExecutor {
@@ -65,15 +73,150 @@ impl DockerExecutor {
         if config.image.is_empty() || config.image.starts_with('-') {
             bail!("Invalid worker image");
         }
+        if config.isolation == IsolationPolicy::Hardened
+            && (config.binary.file_name().and_then(|n| n.to_str()) != Some("podman")
+                || config.network != "none"
+                || config.writable_bytes == 0
+                || config.writable_bytes > 4 * 1024 * 1024 * 1024)
+        {
+            bail!(
+                "Hardened workers require rootless Podman, offline networking and bounded writable storage"
+            );
+        }
         Ok(Self { config })
     }
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.config.binary);
+        // Runtime clients receive connection/runtime settings only, never publisher,
+        // API or attestor credentials that Podman might otherwise copy from the host.
+        cmd.env_clear();
+        for name in [
+            "PATH",
+            "HOME",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+            "CONTAINERS_CONF",
+            "CONTAINERS_STORAGE_CONF",
+            "CONTAINERS_REGISTRIES_CONF",
+            "REGISTRY_AUTH_FILE",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
+            }
+        }
         cmd.stdin(Stdio::null()).kill_on_drop(true);
         cmd
     }
     fn name(id: BuildId) -> String {
         format!("librehub-{id}")
+    }
+
+    async fn metadata(&self, args: &[&str]) -> anyhow::Result<String> {
+        let mut child = self
+            .command()
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdout = child.stdout.take().context("Missing runtime metadata")?;
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut bytes = Vec::new();
+            stdout.take(64 * 1024 + 1).read_to_end(&mut bytes).await?;
+            if bytes.len() > 64 * 1024 || !child.wait().await?.success() {
+                bail!("Runtime metadata unavailable");
+            }
+            Ok::<_, anyhow::Error>(String::from_utf8(bytes)?.trim().to_owned())
+        })
+        .await??;
+        Ok(result)
+    }
+    async fn environment(&self, job: &crate::BuildJob) -> anyhow::Result<BuildEnvironmentIdentity> {
+        let podman = self.config.binary.file_name().and_then(|n| n.to_str()) == Some("podman");
+        let mut selinux_type = None;
+        if self.config.isolation == IsolationPolicy::Hardened {
+            let info: serde_json::Value =
+                serde_json::from_str(&self.metadata(&["info", "--format=json"]).await?)?;
+            let host = &info["host"];
+            if host["security"]["apparmorEnabled"] == true {
+                bail!(
+                    "An operational nested-bubblewrap AppArmor profile is not available for this executor"
+                );
+            }
+            // Maintained container-selinux domain for nested user namespaces;
+            // preserve SELinux/MCS rather than disabling labeling.
+            if host["security"]["selinuxEnabled"] == true {
+                selinux_type = Some("container_userns_t".to_owned());
+            }
+            if host["security"]["rootless"] != true
+                || host["security"]["seccompEnabled"] != true
+                || host["cgroupVersion"] != "v2"
+            {
+                bail!("Required rootless seccomp/cgroup-v2 protections unavailable");
+            }
+        }
+        let image = self
+            .metadata(&["image", "inspect", "--format={{.Id}}", &self.config.image])
+            .await?;
+        // Docker includes the algorithm prefix; Podman reports the same OCI
+        // configuration digest as bare hex. Normalize that representation only.
+        let image = if librehub_common::valid_checksum(&image) {
+            format!("sha256:{image}")
+        } else {
+            image
+        };
+        if !image
+            .strip_prefix("sha256:")
+            .is_some_and(librehub_common::valid_checksum)
+        {
+            bail!("Worker image content identity unavailable");
+        }
+        let arch = job.architecture.to_string();
+        // Clean trusted image probe receives no source, manifest code, mounts or credentials.
+        let output = self.metadata(&["run","--rm","--network=none","--cap-drop=ALL","--security-opt=no-new-privileges=true","--entrypoint=/bin/sh",&image,"-c",
+            "flatpak-builder --version && flatpak info --user --show-commit --arch=\"$1\" \"$2//$4\" && flatpak info --user --show-commit --arch=\"$1\" \"$3//$4\" && sha256sum /usr/local/bin/librehub-build", "probe", &arch,&job.manifest.runtime,&job.manifest.sdk,&job.manifest.runtime_version]).await?;
+        let lines: Vec<_> = output.lines().collect();
+        let expected_helper = format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("../../../infra/docker/librehub-build"))
+        );
+        if lines.len() != 4
+            || !librehub_common::valid_checksum(lines[1])
+            || !librehub_common::valid_checksum(lines[2])
+            || lines[3].split_whitespace().next() != Some(expected_helper.as_str())
+        {
+            bail!("Pinned Flatpak environment unavailable");
+        }
+        Ok(BuildEnvironmentIdentity {
+            container_runtime: if podman { "podman" } else { "docker" }.into(),
+            builder_version: crate::IMPLEMENTATION_VERSION.into(),
+            image_config_digest: image,
+            runtime_ref: format!(
+                "runtime/{}/{}/{}",
+                job.manifest.runtime, arch, job.manifest.runtime_version
+            ),
+            runtime_commit: lines[1].into(),
+            sdk_ref: format!(
+                "runtime/{}/{}/{}",
+                job.manifest.sdk, arch, job.manifest.runtime_version
+            ),
+            sdk_commit: lines[2].into(),
+            flatpak_builder_version: lines[0].into(),
+            architecture: job.architecture,
+            isolation: self.config.isolation,
+            network: self.config.network.clone(),
+            source_date_epoch: Some(1),
+            selinux_type,
+            writable_bytes: if self.config.isolation == IsolationPolicy::Hardened {
+                self.config.writable_bytes
+            } else {
+                0
+            },
+        })
     }
 
     async fn run(
@@ -165,6 +308,7 @@ impl DockerExecutor {
                 .await
                 .context("Cannot set copied manifest permissions")?;
         }
+        let environment = self.environment(job).await?;
         let name = Self::name(job.id);
         // A partially masked procfs cannot be remounted from a nested user namespace.
         // Docker and Podman expose different switches for the same worker requirement.
@@ -179,7 +323,7 @@ impl DockerExecutor {
         } else {
             "--security-opt=systempaths=unconfined"
         };
-        let args: Vec<String> = [
+        let mut args: Vec<String> = [
             "create",
             "--name",
             &name,
@@ -203,14 +347,93 @@ impl DockerExecutor {
             "--user=10001:10001",
             "--workdir=/work",
             "--entrypoint=/usr/local/bin/librehub-build",
-            &self.config.image,
+            &environment.image_config_digest,
             &job.architecture.to_string(),
             &job.manifest.app_id,
         ]
         .into_iter()
         .map(str::to_owned)
         .collect();
+        let hardened = self.config.isolation == IsolationPolicy::Hardened;
+        if hardened {
+            args.retain(|a| {
+                !a.contains("seccomp=unconfined") && !a.contains("apparmor=unconfined")
+            });
+            let image_index = args
+                .iter()
+                .position(|a| a == &environment.image_config_digest)
+                .context("Missing image argument")?;
+            if let Some(label) = &environment.selinux_type {
+                args.insert(image_index, format!("--security-opt=label=type:{label}"));
+            }
+            args.insert(image_index, "--read-only".into());
+            args.insert(image_index, "--pid=private".into());
+            args.insert(image_index, "--ipc=private".into());
+            args.insert(image_index, "--uts=private".into());
+            args.insert(image_index, "--cgroupns=private".into());
+            args.insert(image_index, "--image-volume=ignore".into());
+            args.insert(image_index, "--env=XDG_CACHE_HOME=/work/cache".into());
+            args.insert(
+                image_index,
+                format!(
+                    "--tmpfs=/work:rw,exec,nosuid,nodev,size={},mode=1777",
+                    self.config.writable_bytes
+                ),
+            );
+            args.insert(
+                image_index,
+                "--tmpfs=/tmp:rw,size=67108864,mode=1777".into(),
+            );
+            args.insert(image_index, "--read-only-tmpfs=false".into());
+            args.retain(|a| !a.starts_with("--entrypoint="));
+            let image_index = args
+                .iter()
+                .position(|a| a == &environment.image_config_digest)
+                .context("Missing image")?;
+            args.insert(image_index, "--entrypoint=/bin/sleep".into());
+            args.truncate(image_index + 2);
+            args.push("86400".into());
+        }
         self.run(&args, logs.clone(), cancel).await?;
+        let actual = self
+            .metadata(&["inspect", "--format={{.Image}}", &name])
+            .await?;
+        if actual.trim_start_matches("sha256:")
+            != environment
+                .image_config_digest
+                .trim_start_matches("sha256:")
+        {
+            bail_executor("Worker image substitution")?;
+        }
+        if hardened {
+            // Initialize trusted idle execution only; no source has been copied yet.
+            // Podman writes the actual OCI config at init, not at create.
+            self.run(&["init".into(), name.clone()], logs.clone(), cancel)
+                .await?;
+            // Default seccomp must be present even if containers.conf is operator-modified.
+            let config: serde_json::Value =
+                serde_json::from_str(&self.metadata(&["inspect", &name]).await?)
+                    .context("Invalid container metadata")?;
+            let c = &config[0];
+            let spec_path = c["OCIConfigPath"]
+                .as_str()
+                .context("Missing OCI configuration")?;
+            let spec: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(spec_path).context("Cannot read OCI configuration")?,
+            )
+            .context("Invalid OCI configuration")?;
+            verify_hardened_configuration(c, &spec)?;
+            if let Some(label) = &environment.selinux_type
+                && spec["process"]["selinuxLabel"]
+                    .as_str()
+                    .and_then(|s| s.split(':').nth(2))
+                    != Some(label.as_str())
+            {
+                bail_executor("Required nested-user-namespace SELinux domain unavailable")?;
+            }
+            self.run(&["start".into(), name.clone()], logs.clone(), cancel)
+                .await?;
+        }
         self.run(
             &[
                 "cp".into(),
@@ -233,12 +456,27 @@ impl DockerExecutor {
             )
             .await?;
         }
-        self.run(
-            &["start".into(), "--attach".into(), name.clone()],
-            logs.clone(),
-            cancel,
-        )
-        .await?;
+        if hardened {
+            self.run(
+                &[
+                    "exec".into(),
+                    name.clone(),
+                    "/usr/local/bin/librehub-build".into(),
+                    job.architecture.to_string(),
+                    job.manifest.app_id.clone(),
+                ],
+                logs.clone(),
+                cancel,
+            )
+            .await?;
+        } else {
+            self.run(
+                &["start".into(), "--attach".into(), name.clone()],
+                logs.clone(),
+                cancel,
+            )
+            .await?;
+        }
         // `docker start -a` exit behavior is verified independently by inspecting State.ExitCode.
         let mut inspect = self.command();
         inspect.args(["inspect", "--format={{.State.ExitCode}}", &name]);
@@ -254,7 +492,7 @@ impl DockerExecutor {
             .trim()
             .parse()
             .context("Invalid Docker exit code")?;
-        if code != 0 {
+        if !hardened && code != 0 {
             return Err(ExecutorError::Exit(Some(code)));
         }
         if cancel.is_cancelled() {
@@ -276,6 +514,7 @@ impl DockerExecutor {
             archive: archive_path,
             destination,
             relative: format!("builds/{}/artifacts/application.flatpak", job.id),
+            environment,
         })
     }
 
@@ -290,6 +529,7 @@ impl DockerExecutor {
             archive,
             destination,
             relative,
+            environment,
         } = prepared;
         let extraction_cancel = cancel.child_token();
         let token = extraction_cancel.clone();
@@ -318,6 +558,7 @@ impl DockerExecutor {
             result = &mut task => result.context("Artifact extraction task failed")??,
         };
         Ok(BuildResult {
+            environment: Some(environment),
             exit_code: Some(0),
             artifacts: vec![artifact],
         })
@@ -389,6 +630,53 @@ impl DockerExecutor {
         }
         result
     }
+}
+
+fn verify_hardened_configuration(
+    c: &serde_json::Value,
+    spec: &serde_json::Value,
+) -> anyhow::Result<()> {
+    if c["HostConfig"]["Privileged"] != false
+        || c["HostConfig"]["ReadonlyRootfs"] != true
+        || c["HostConfig"]["NetworkMode"] != "none"
+        || c["HostConfig"]["PidMode"] != "private"
+        || c["HostConfig"]["IpcMode"] != "private"
+        || c["HostConfig"]["UTSMode"] != "private"
+        || c["HostConfig"]["SecurityOpt"]
+            .as_array()
+            .is_none_or(|opts| {
+                opts.iter()
+                    .any(|o| o.as_str().is_some_and(|s| s.contains("unconfined")))
+            })
+    {
+        bail!("Invalid hardened runtime configuration");
+    }
+    if c["Mounts"].as_array().is_some_and(|mounts| {
+        mounts
+            .iter()
+            .any(|m| m["Type"] == "bind" || m["Type"] == "volume")
+    }) {
+        bail!("Unexpected host or image-volume mount");
+    }
+    if spec["linux"]["seccomp"]["defaultAction"] != "SCMP_ACT_ERRNO"
+        || spec["process"]["noNewPrivileges"] != true
+        || spec["linux"]["resources"]["memory"]["limit"] != 4294967296u64
+        || spec["linux"]["resources"]["pids"]["limit"] != 512
+        || spec["linux"]["resources"]["cpu"]["quota"]
+            .as_i64()
+            .zip(spec["linux"]["resources"]["cpu"]["period"].as_i64())
+            .is_none_or(|(q, p)| p <= 0 || q != 2 * p)
+        || spec["process"]["user"]["uid"] != 10001
+        || spec["process"]["capabilities"]
+            .as_object()
+            .is_none_or(|caps| {
+                caps.values()
+                    .any(|value| value.as_array().is_none_or(|values| !values.is_empty()))
+            })
+    {
+        bail!("Hardened seccomp or finite resources unavailable");
+    }
+    Ok(())
 }
 fn bail_executor(message: &str) -> Result<(), ExecutorError> {
     Err(anyhow::anyhow!("{message}").into())
@@ -821,5 +1109,78 @@ mod extraction_cancellation_tests {
         cancel.cancel();
         assert!(extract_bundle(&archive, &destination, 100, "unused".into(), &cancel).is_err());
         assert!(!destination.exists());
+    }
+}
+
+#[cfg(test)]
+mod hardened_policy_tests {
+    use super::verify_hardened_configuration;
+    use serde_json::{Value, json};
+    fn valid() -> (Value, Value) {
+        (
+            json!({"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"NetworkMode":"none","PidMode":"private","IpcMode":"private","UTSMode":"private","SecurityOpt":["no-new-privileges=true","unmask=/proc/*"]},"Mounts":[{"Type":"tmpfs","Destination":"/work"}]}),
+            json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"},"resources":{"memory":{"limit":4294967296u64},"pids":{"limit":512},"cpu":{"quota":200000,"period":100000}}},"process":{"noNewPrivileges":true,"user":{"uid":10001},"capabilities":{"effective":[]}}}),
+        )
+    }
+    #[test]
+    fn rejects_seccomp_disabled_or_missing() {
+        for action in [json!("SCMP_ACT_ALLOW"), Value::Null] {
+            let (c, mut s) = valid();
+            s["linux"]["seccomp"]["defaultAction"] = action;
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_privilege_namespace_egress_and_writable_root() {
+        for field in ["Privileged", "ReadonlyRootfs", "NetworkMode"] {
+            let (mut c, s) = valid();
+            c["HostConfig"][field] = match field {
+                "Privileged" => json!(true),
+                "ReadonlyRootfs" => json!(false),
+                _ => json!("host"),
+            };
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_unconfined_profiles_and_credential_mounts() {
+        for opt in [
+            "seccomp=unconfined",
+            "apparmor=unconfined",
+            "systempaths=unconfined",
+        ] {
+            let (mut c, s) = valid();
+            c["HostConfig"]["SecurityOpt"] = json!([opt]);
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+        for source in [
+            "/var/run/docker.sock",
+            "/operator/attestor.seed",
+            "/operator/flat-manager.token",
+        ] {
+            let (mut c, s) = valid();
+            c["Mounts"] = json!([{"Type":"bind","Source":source,"Destination":"/secret"}]);
+            assert!(verify_hardened_configuration(&c, &s).is_err());
+        }
+    }
+    #[test]
+    fn rejects_missing_limits_capabilities_or_no_new_privileges() {
+        for pointer in [
+            "/linux/resources/memory/limit",
+            "/linux/resources/pids/limit",
+            "/linux/resources/cpu/quota",
+            "/process/noNewPrivileges",
+            "/process/user/uid",
+            "/process/capabilities/effective",
+        ] {
+            let (c, mut s) = valid();
+            *s.pointer_mut(pointer).unwrap() = Value::Null;
+            assert!(verify_hardened_configuration(&c, &s).is_err(), "{pointer}");
+        }
+    }
+    #[test]
+    fn supported_configuration_requires_every_protection() {
+        let (c, s) = valid();
+        verify_hardened_configuration(&c, &s).unwrap();
     }
 }

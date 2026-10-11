@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+tempfile = "3"
 librehub-common.workspace = true
 librehub-publisher.workspace = true
 anyhow.workspace = true

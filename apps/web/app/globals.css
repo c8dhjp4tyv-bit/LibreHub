@@ -1035,3 +1035,5 @@ footer span {
 .report-success {
   padding: 12px 0;
 }
+
+.supply-chain-evidence code { overflow-wrap: anywhere; word-break: break-word; }

@@ -166,7 +166,7 @@ export const getCatalog = cache(async <T>(path: string): Promise<T | null> => {
   let response: Response;
   try {
     response = await fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
-      next: { revalidate: 5 },
+      ...(path.endsWith("/provenance") ? { cache: "no-store" as const } : { next: { revalidate: 5 } }),
       signal: AbortSignal.timeout(8000),
     });
   } catch {
@@ -212,4 +212,20 @@ export function commitLink(
   } catch {
     return null;
   }
+}
+
+export interface SupplyChainEvidence {
+  status: "pending" | "verified" | "failed" | "legacy_unattested" | "unavailable";
+  verification: { verified: boolean; code: string; key_id: string | null };
+  reproducibility: string;
+  build: {
+    subject: { name: string; digest: { sha256: string } }[];
+    predicate: {
+      buildDefinition: {
+        externalParameters: { source: { revision: { repository: string; commit: string } } };
+        internalParameters: { imageConfigDigest: string; isolation: string };
+      };
+      runDetails: { builder: { id: string }; metadata: { finishedOn: string } };
+    };
+  } | null;
 }

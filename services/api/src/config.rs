@@ -32,6 +32,11 @@ impl std::fmt::Debug for PublishingConfig {
 }
 impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
+        if env("LIBREHUB_SUPPLY_CHAIN_POLICY", "development") == "enforce"
+            && env("LIBREHUB_WORKER_ISOLATION", "compatibility") != "hardened"
+        {
+            bail!("Enforcement requires explicitly configured hardened workers");
+        }
         let publishing = match std::env::var("LIBREHUB_FLAT_MANAGER_URL") {
             Ok(manager_url) => {
                 let token = match std::env::var("LIBREHUB_FLAT_MANAGER_TOKEN_FILE") {
@@ -87,6 +92,11 @@ impl AppConfig {
                 binary: env("LIBREHUB_DOCKER", "docker").into(),
                 image: env("LIBREHUB_WORKER_IMAGE", "librehub-worker:m1"),
                 network: env("LIBREHUB_WORKER_NETWORK", "none"),
+                isolation: match env("LIBREHUB_WORKER_ISOLATION", "compatibility").as_str() {
+                    "compatibility" => librehub_common::IsolationPolicy::Compatibility,
+                    "hardened" => librehub_common::IsolationPolicy::Hardened,
+                    _ => bail!("Invalid worker isolation policy"),
+                },
                 timeout: Duration::from_secs(number(
                     "LIBREHUB_BUILD_TIMEOUT_SECONDS",
                     1800,

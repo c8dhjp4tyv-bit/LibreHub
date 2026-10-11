@@ -21,6 +21,10 @@ pub struct Store {
     // The lock lasts as long as any repository handle. Two supervisors must never share data.
     _lock: Arc<File>,
     pub data_dir: PathBuf,
+    pub supply_policy: SupplyChainPolicy,
+    pub attestor: Option<Arc<librehub_supply_chain::Attestor>>,
+    pub allowed_images: Vec<String>,
+    pub attestation_repository: Option<librehub_publisher::repository::RepositoryConfig>,
 }
 #[derive(Debug, thiserror::Error)]
 #[error("The build queue is full")]
@@ -79,6 +83,7 @@ impl Store {
         db.execute_batch(include_str!("../migrations/003_developer_platform.sql"))?;
         db.execute_batch(include_str!("../migrations/004_catalog.sql"))?;
         db.execute_batch(include_str!("../migrations/005_trust_security.sql"))?;
+        db.execute_batch(include_str!("../migrations/006_supply_chain.sql"))?;
         // Existing M3 databases predate the explicit automatic-publication association.
         let has_auto_publish_id = db
             .prepare("PRAGMA table_info(source_events)")?
@@ -97,6 +102,10 @@ impl Store {
             db: Arc::new(Mutex::new(db)),
             _lock: Arc::new(lock),
             data_dir,
+            supply_policy: SupplyChainPolicy::Development,
+            attestor: None,
+            allowed_images: vec![],
+            attestation_repository: None,
         })
     }
     pub(crate) async fn run<T, F>(&self, f: F) -> anyhow::Result<T>

@@ -74,6 +74,10 @@ pub fn router_with_publisher(state: ApiState, publishing: Option<Publishing>) ->
         .route("/api/v1/builds", post(create))
         .route("/api/v1/builds/{id}", get(lookup))
         .route("/api/v1/builds/{id}/logs", get(logs))
+        .route(
+            "/api/v1/builds/{id}/supply-chain-policy",
+            get(supply_policy),
+        )
         .route("/api/v1/builds/{id}/cancel", post(cancel))
         .fallback(|| async {
             ApiError::new(
@@ -118,6 +122,9 @@ fn publish_id(raw: &str) -> Result<PublishId, ApiError> {
 fn publication_error(error: anyhow::Error) -> ApiError {
     if let Some(error) = error.downcast_ref::<AdmissionError>() {
         let (status, code) = match error {
+            AdmissionError::SupplyChainDenied => {
+                (StatusCode::CONFLICT, "supply_chain_policy_denied")
+            }
             AdmissionError::Missing => (StatusCode::NOT_FOUND, "build_not_found"),
             AdmissionError::Ineligible => (StatusCode::CONFLICT, "build_not_publishable"),
             AdmissionError::ApplicationOwned => (StatusCode::CONFLICT, "application_owned"),
@@ -313,6 +320,29 @@ async fn cancel_publication(
             })?,
     ))
 }
+async fn supply_policy(
+    State(state): State<Arc<ApiState>>,
+    Path(raw): Path<String>,
+) -> Result<Json<Option<PolicyDecision>>, ApiError> {
+    let id = parse_id(&raw)?;
+    if state
+        .supervisor
+        .store
+        .get(id)
+        .await
+        .map_err(ApiError::internal)?
+        .is_none()
+    {
+        return Err(ApiError::missing());
+    }
+    let decision = state
+        .supervisor
+        .store
+        .last_supply_policy(id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(decision))
+}
 async fn ready(
     catalog: Option<Extension<crate::catalog_worker::CatalogWorker>>,
     platform: Option<Extension<Arc<crate::platform::Platform>>>,
@@ -347,7 +377,14 @@ async fn ready(
         true
     };
     let authentication = database;
-    let ready = catalog_ready
+    let attestor = state
+        .supervisor
+        .store
+        .attestor
+        .as_ref()
+        .is_none_or(|a| a.ready());
+    let ready = attestor
+        && catalog_ready
         && source
         && authentication
         && database
@@ -363,7 +400,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
+            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
         ),
     )
 }

@@ -87,7 +87,11 @@ impl Supervisor {
             }
         }
     }
-    async fn execute(&self, id: BuildId, executor: Arc<dyn BuildExecutor>) -> anyhow::Result<()> {
+    pub async fn execute(
+        &self,
+        id: BuildId,
+        executor: Arc<dyn BuildExecutor>,
+    ) -> anyhow::Result<()> {
         let claimed = self
             .store
             .transition(id, BuildStatus::Validating, None, None)
@@ -196,6 +200,7 @@ impl Supervisor {
                 tracing::warn!(%id, error = %e, "Build failed");
                 let result = if let ExecutorError::Exit(code) = &e {
                     Some(BuildResult {
+                        environment: None,
                         exit_code: *code,
                         artifacts: vec![],
                     })

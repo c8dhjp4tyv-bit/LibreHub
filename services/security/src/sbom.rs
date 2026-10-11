@@ -149,7 +149,25 @@ pub async fn write_sbom_artifact(
     tokio::fs::create_dir_all(&security_dir).await?;
 
     let file_path = security_dir.join("sbom.spdx.json");
-    let json_bytes = serde_json::to_vec_pretty(document)?;
+    let mut json_bytes = serde_json::to_vec_pretty(document)?;
+    if file_path.exists() {
+        use std::io::Read;
+        let old = librehub_publisher::artifact::controlled_file(
+            data_dir,
+            &format!("security/{publication_id}/sbom.spdx.json"),
+        )?;
+        anyhow::ensure!(old.metadata()?.len() <= 10 * 1024 * 1024, "SBOM size limit");
+        let mut bytes = Vec::new();
+        old.take(10 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        let mut existing: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let mut proposed = serde_json::to_value(document)?;
+        // A retry preserves the original document identity and bytes. Changed release
+        // composition needs an explicit new SBOM identity; it cannot replace history.
+        existing["creationInfo"]["created"] = serde_json::Value::Null;
+        proposed["creationInfo"]["created"] = serde_json::Value::Null;
+        anyhow::ensure!(existing == proposed, "SBOM history cannot be overwritten");
+        json_bytes = bytes;
+    }
 
     anyhow::ensure!(
         json_bytes.len() <= 10 * 1024 * 1024,
@@ -160,7 +178,14 @@ pub async fn write_sbom_artifact(
     hasher.update(&json_bytes);
     let sha256 = format!("{:x}", hasher.finalize());
 
-    tokio::fs::write(&file_path, &json_bytes).await?;
+    if !file_path.exists() {
+        use std::io::Write;
+        let mut staging = tempfile::NamedTempFile::new_in(&security_dir)?;
+        staging.write_all(&json_bytes)?;
+        staging.as_file().sync_all()?;
+        staging.persist_noclobber(&file_path)?;
+        std::fs::File::open(&security_dir)?.sync_all()?;
+    }
 
     let relative_path = format!("security/{publication_id}/sbom.spdx.json");
     let component_count = document.packages.len() as u32;

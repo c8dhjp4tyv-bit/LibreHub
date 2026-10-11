@@ -115,6 +115,7 @@ impl BuildExecutor for Fake {
             .await
             .map_err(anyhow::Error::from)?;
         Ok(BuildResult {
+            environment: None,
             exit_code: Some(0),
             artifacts: vec![Artifact {
                 path: relative,

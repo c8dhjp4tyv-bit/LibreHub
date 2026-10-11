@@ -14,7 +14,7 @@ The root SPDX Package is cryptographically bound to the publication and build ar
 
 - **`SPDXID`**: `SPDXRef-Application`
 - **`name`**: Application ID (e.g., `org.librehub.CatalogHello`)
-- **`versionInfo`**: Runtime version or application release version
+- **`versionInfo`**: Verified AppStream application version, or immutable source revision when unavailable
 - **`packageFileName`**: Flatpak ref (e.g., `app/org.librehub.CatalogHello/x86_64/stable`)
 - **`checksums`**:
   - `SHA256`: OSTree commit checksum
@@ -83,3 +83,9 @@ Response:
 GET /api/v1/catalog/apps/:app_id/releases/:release_id/sbom/download
 ```
 Returns `application/spdx+json` with `Content-Disposition: attachment; filename="sbom-...spdx.json"`.
+
+## M6 supply-chain evidence
+
+See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
+Cryptographic provenance is separate from publisher identity, vulnerability analysis,
+moderation and application safety. Legacy releases carry no fabricated build evidence.

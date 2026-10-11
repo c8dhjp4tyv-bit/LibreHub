@@ -24,10 +24,12 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = config.data_dir;
     let database_path = config.database_path;
     let store_data_dir = data_dir.clone();
-    let store = tokio::task::spawn_blocking(move || {
+    let mut store = tokio::task::spawn_blocking(move || {
         Store::open_at(&store_data_dir, database_path.as_deref())
     })
     .await??;
+    store.attestation_repository = config.publishing.as_ref().map(|p| p.repository.clone());
+    store.configure_attestor().await?;
     let supervisor = Supervisor::new(store);
     supervisor
         .recover(executor.as_ref())
@@ -87,6 +89,11 @@ async fn main() -> anyhow::Result<()> {
         publishing.as_ref().map(|p| p.repository.clone()),
         supervisor.shutdown.clone(),
     );
+    let attestation_task = tokio::spawn(librehub_api::supply_chain::run(
+        supervisor.store.clone(),
+        supervisor.shutdown.clone(),
+    ));
+    let supply_router = librehub_api::supply_chain_http::router(supervisor.store.clone());
     let security_task = tokio::spawn(security_worker.clone().run());
     let mut security_http_state = librehub_api::security_http::SecurityHttp::new(
         supervisor.store.clone(),
@@ -114,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = app
         .merge(catalog_router)
+        .merge(supply_router)
         .merge(sec_public)
         .merge(sec_dev)
         .merge(sec_admin)
@@ -146,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
     signal.abort();
     result?;
     worker_result?;
+    attestation_task.await.context("Attestor task failed")??;
     source_task.await.context("Source worker task failed")??;
     catalog_task.await.context("Catalog worker task failed")??;
     security_task

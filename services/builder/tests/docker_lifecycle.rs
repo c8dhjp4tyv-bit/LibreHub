@@ -25,7 +25,9 @@ root = pathlib.Path(__file__).parent
 args = sys.argv[1:]
 with (root / 'calls.jsonl').open('a') as f: f.write(json.dumps(args) + '\n')
 mode = (root / 'mode').read_text()
-if args[0] == 'create':
+if args[0] == 'image': print('sha256:' + 'a' * 64)
+elif args[0] == 'run': print('flatpak-builder 1.4.4\n' + 'b' * 64 + '\n' + 'c' * 64 + '\n6eb989986df74a9e18ad77a3271e0a00910ea3f791a38a8eb228700eb4dd98e2  /usr/local/bin/librehub-build')
+elif args[0] == 'create':
     (root / 'exists').touch()
     print('container-id')
 elif args[0] == 'cp' and args[-1] == '-':
@@ -48,7 +50,7 @@ elif args[0] == 'start':
         while not (root / 'stopped').exists(): time.sleep(.01)
         child.wait()
     elif mode == 'failure': sys.exit(9)
-elif args[0] == 'inspect': print('0')
+elif args[0] == 'inspect': print('sha256:' + 'a' * 64 if '--format={{.Image}}' in args else '0')
 elif args[:2] == ['container', 'ls']:
     if (root / 'exists').exists(): print('container-name')
 elif args[0] == 'stop':
@@ -120,7 +122,7 @@ async fn success_collects_bundle_and_exposes_both_streams_without_host_mounts() 
             .any(|l| matches!(l.stream, LogStream::Stderr))
     );
     let calls = calls(dir.path());
-    let create = &calls[0];
+    let create = calls.iter().find(|args| args[0] == "create").unwrap();
     assert!(create.contains(&"--cap-drop=ALL".into()));
     assert!(create.contains(&"--security-opt=systempaths=unconfined".into()));
     assert!(create.contains(&"--user=10001:10001".into()));

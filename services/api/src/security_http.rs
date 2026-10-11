@@ -284,6 +284,14 @@ async fn download_sbom(
             )
         })?;
 
+    if details.app_id != app_id {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "release_not_found",
+            "Release was not found",
+        ));
+    }
+
     let _rel_path = details.sbom_path.as_deref().ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
