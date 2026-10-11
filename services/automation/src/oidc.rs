@@ -295,15 +295,30 @@ pub fn verify_github_token(
     {
         return Err(OidcError::Malformed);
     }
-    // Default GitHub subjects are `repo:<owner>/<repo>:...`. A subject that names a
-    // different repository than the signed `repository` claim is never accepted.
-    if !out
-        .subject
-        .starts_with(&format!("repo:{}:", out.repository))
-    {
+    // A subject that names a different repository than the signed claims is never accepted.
+    if subject_rest(&out).is_none() {
         return Err(OidcError::SubjectMismatch);
     }
     Ok(out)
+}
+
+/// The part of `sub` after the repository prefix. GitHub issues either the classic
+/// `repo:<owner>/<repo>:...` or, for accounts using immutable identifiers,
+/// `repo:<owner>@<owner_id>/<repo>@<repository_id>:...`. Both must agree with the signed
+/// `repository`, `repository_owner` and numeric ID claims.
+fn subject_rest(claims: &GithubClaims) -> Option<&str> {
+    let sub = claims.subject.as_str();
+    if let Some(rest) = sub.strip_prefix(&format!("repo:{}:", claims.repository)) {
+        return Some(rest);
+    }
+    let name = claims
+        .repository
+        .strip_prefix(claims.repository_owner.as_str())?
+        .strip_prefix('/')?;
+    sub.strip_prefix(&format!(
+        "repo:{}@{}/{}@{}:",
+        claims.repository_owner, claims.repository_owner_id, name, claims.repository_id
+    ))
 }
 
 /// What the default subject says about the workflow run.
@@ -315,7 +330,7 @@ pub enum SubjectKind {
     Other,
 }
 pub fn subject_kind(claims: &GithubClaims) -> SubjectKind {
-    let rest = &claims.subject[format!("repo:{}:", claims.repository).len()..];
+    let rest = subject_rest(claims).unwrap_or_default();
     if let Some(r) = rest.strip_prefix("ref:") {
         SubjectKind::Ref(r.to_owned())
     } else if let Some(e) = rest.strip_prefix("environment:") {
@@ -810,6 +825,25 @@ mod tests {
             }))),
             Err(OidcError::MissingClaim)
         );
+    }
+    #[test]
+    fn immutable_id_subjects_are_accepted_only_when_they_match_the_signed_ids() {
+        let ok = verify(&token(modified(|c| {
+            c["sub"] = json!("repo:octo@583231/hello@1296269:ref:refs/heads/main");
+        })))
+        .unwrap();
+        assert_eq!(
+            subject_kind(&ok),
+            SubjectKind::Ref("refs/heads/main".into())
+        );
+        for sub in [
+            "repo:octo@583231/hello@1296270:ref:refs/heads/main",
+            "repo:octo@583232/hello@1296269:ref:refs/heads/main",
+            "repo:octo@583231/other@1296269:ref:refs/heads/main",
+        ] {
+            let t = token(modified(|c| c["sub"] = json!(sub)));
+            assert_eq!(verify(&t), Err(OidcError::SubjectMismatch), "{sub}");
+        }
     }
     #[test]
     fn subject_must_match_the_signed_repository_claim() {

@@ -34,8 +34,9 @@ start automations the project owner defined and wait for them.
 * `exp`/`iat` required, `nbf` honoured, 30 s leeway, lifetime ≤ 1 h;
 * claims `repository`, `repository_id`, `repository_owner(_id)`, `ref`, `sha` (40 hex),
   `event_name`, `workflow_ref`, `jti`, `run_id`, `run_attempt` required; numeric IDs must be
-  canonical digits; the `sub` must start with `repo:<repository>:` (so a subject naming another
-  repository is refused).
+  canonical digits; the `sub` must start with `repo:<repository>:` or, for accounts using GitHub's
+  immutable identifiers (observed on this repository's own CI), `repo:<owner>@<owner_id>/<name>@<repository_id>:`
+  where every part equals the signed claims (so a subject naming another repository or ID is refused).
 
 **JWKS handling.** Keys are fetched only from the configured URL (https, redirects off, 3 s/8 s
 deadlines, 256 KiB cap), cached 10 minutes, refreshed at most once per minute (also when an
