@@ -571,7 +571,7 @@ async fn stored_credentials_are_private_scoped_to_the_server_and_refused_when_ex
     let run = Run::new(&url);
     let config = run.config.path().to_owned();
     let (login, run) = tokio::task::spawn_blocking(move || {
-        let child = run
+        let mut child = run
             .command(&["--json", "auth", "login", "--token-stdin"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -634,7 +634,7 @@ async fn login_refuses_to_persist_credentials_inside_github_actions() {
     let (url, _) = serve().await;
     let run = Run::new(&url).env("GITHUB_ACTIONS", "true");
     let o = tokio::task::spawn_blocking(move || {
-        let child = run
+        let mut child = run
             .command(&["auth", "login", "--token-stdin"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
