@@ -5,10 +5,10 @@ use axum::http::StatusCode;
 use common::*;
 use librehub_common::BuildId;
 use serde_json::json;
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 #[tokio::test]
-async fn a_malformed_outbox_event_blocks_admission_but_runs_and_deliveries_complete() {
+async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
     let mut env = Env::at(tempfile::tempdir().unwrap(), false).await;
     let project = env.project().await;
     env.resolver.set(
@@ -50,6 +50,14 @@ async fn a_malformed_outbox_event_blocks_admission_but_runs_and_deliveries_compl
             [project.to_string()],
         )
         .unwrap();
+    // SQLite allows a BLOB even in TEXT-affinity columns. This must be
+    // quarantined as a row-level decoding error instead of aborting the batch.
+    env.db()
+        .execute(
+            "INSERT INTO event_outbox(event_id,dedupe_key,project_id,event_type,subject_id,data,origin_kind,correlation_id,chain_depth,created_at) VALUES('00000000-0000-0000-0000-000000000001','poison-blob',?1,'project.archived','s',X'FF','system','c',0,'2026-01-01T00:00:00Z')",
+            [project.to_string()],
+        )
+        .unwrap();
     env.spawn_workers();
     let view = env.wait_run(project, &run, &["waiting_for_build"]).await;
     let build: BuildId = view["build_id"].as_str().unwrap().parse().unwrap();
@@ -73,10 +81,81 @@ async fn a_malformed_outbox_event_blocks_admission_but_runs_and_deliveries_compl
     })
     .await
     .expect("already-admitted delivery must complete despite poison row");
-    assert!(env.automation.outbox_failures.load(Ordering::Relaxed) > 0);
-    assert!(!env.outbound.health.failures().is_empty());
-    assert!(env.store.outbox_batch("automation", 64).await.is_err());
-    assert!(env.store.outbox_batch("webhooks", 64).await.is_err());
+    // Both independent cursors must move beyond the malformed event without
+    // deleting or pretending to process it. Its raw row remains for inspection.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let quarantined: i64 = env
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM outbox_quarantine WHERE reason='invalid_event_encoding'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if quarantined == 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("both consumers must quarantine the poison row");
+    assert!(env.store.outbox_batch("automation", 64).await.is_ok());
+    assert!(env.store.outbox_batch("webhooks", 64).await.is_ok());
+
+    // A later event must still be delivered and its automation must complete.
+    let (status, later) = env
+        .trigger(
+            project,
+            automation,
+            json!({"commit": Provider::commit('f'), "idempotency_key": "after-poison"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{later}");
+    let later_id = later["run"]["id"].as_str().unwrap().to_owned();
+    let view = env
+        .wait_run(project, &later_id, &["waiting_for_build"])
+        .await;
+    let later_build: BuildId = view["build_id"].as_str().unwrap().parse().unwrap();
+    env.succeed_build(later_build).await;
+    env.wait_run(project, &later_id, &["completed"]).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let completed: i64 = env
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM integration_deliveries WHERE status='delivered'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if completed == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("later webhook must be delivered after quarantine");
+    let consumer_count: i64 = env
+        .db()
+        .query_row(
+            "SELECT count(DISTINCT consumer) FROM outbox_quarantine",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(consumer_count, 2);
+    let quarantined_events: i64 = env
+        .db()
+        .query_row(
+            "SELECT count(DISTINCT seq) FROM outbox_quarantine",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(quarantined_events, 2);
     assert!(
         !env.shutdown.is_cancelled(),
         "a worker failure must not cancel the shared shutdown"
@@ -103,6 +182,9 @@ async fn a_malformed_outbox_event_blocks_admission_but_runs_and_deliveries_compl
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(remaining, 1, "the event is kept, never silently dropped");
+    assert_eq!(
+        remaining, 1,
+        "the original event must remain for investigation"
+    );
     env.stop().await;
 }

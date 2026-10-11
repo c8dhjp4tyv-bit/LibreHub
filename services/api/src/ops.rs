@@ -452,6 +452,20 @@ async fn collect(state: &OpsState, data_dir: PathBuf) -> Result<String, anyhow::
                 .load(std::sync::atomic::Ordering::Relaxed) as f64,
         );
     }
+    header(
+        &mut output,
+        "librehub_outbox_quarantined_events",
+        "gauge",
+        "Malformed outbox events retained for operator review, per independent consumer.",
+    );
+    for consumer in ["automation", "webhooks"] {
+        sample(
+            &mut output,
+            "librehub_outbox_quarantined_events",
+            &[("consumer", consumer)],
+            state.store.outbox_quarantine_count(consumer).await? as f64,
+        );
+    }
     Ok(output)
 }
 
