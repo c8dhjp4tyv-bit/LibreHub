@@ -216,3 +216,38 @@ Unidentified store callers share a per-app cap of three reports per 24 hours.
 See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
 Cryptographic provenance is separate from publisher identity, vulnerability analysis,
 moderation and application safety. Legacy releases carry no fabricated build evidence.
+
+## M7 automation and integrations
+
+Trust boundaries: GitHub OIDC identity → federated authentication → project-scoped authorization
+→ durable engine → existing M3/M1/M2/M5/M6 services → signed outbound events. External CI never
+holds flat-manager, attestor or publisher credentials.
+
+Review results (each point has a test, see [m7-verification.md](m7-verification.md)):
+
+| Risk | Control |
+| --- | --- |
+| OIDC forgery, algorithm/`none`/HMAC confusion, embedded keys | RS256 only, forbidden header fields, signature over exact bytes, ≥ 2048-bit keys |
+| Issuer/audience confusion | exact `iss`, configured `aud`, no wildcard |
+| Repository spoofing and renames | policies match immutable `repository_id`/`repository_owner_id`; `sub` must match the signed `repository` |
+| JWKS substitution/DoS | keys only from the configured https URL, one refresh per minute, bounded size/time, fail closed |
+| Replay | single-use `jti`, ≤ 15 min credentials |
+| Privilege escalation | grantable scopes are a closed set; credentials bound to one project; global routes denied; no refresh tokens |
+| Untrusted pull requests | denied by default; read-only if explicitly admitted; never `automations:run` |
+| Cross-project access | project binding enforced in middleware and handlers; foreign IDs answer 404 |
+| Duplicate triggers | unique `(automation, trigger_key)`, per-commit build reuse, `intent_key` on source events |
+| Scheduler duplicates | cursor CAS + occurrence in the run key |
+| Notification loops | origin, chain depth ≤ 3, origin filters |
+| Unbounded growth | finite limits for automations, runs, approvals, webhooks, identities, audit, deliveries, outbox retention |
+| Approval reuse/staleness | single-use, bound to a candidate digest, run, workflow version; expiry |
+| Stable bypass | approval required by default; CI-triggered runs can never promote without an approved release; all gates re-checked before M2 admission |
+| M6/M5 bypass | publication goes through `enqueue_publish` (M6 policy) and pre-flight moderation (not disableable) |
+| Webhook SSRF/rebinding | https only, all addresses public, validated per attempt, connection pinned, no redirects/proxy, size and time bounds |
+| Secret leakage | webhook secrets encrypted at rest, returned once; tokens hashed; CLI/dashboard never print tokens; logs carry IDs only |
+| Lost events | outbox written by triggers in the state-change transaction; cursors advance with fan-out |
+| Broken cancellation | cooperative; reports `publication_continues` instead of claiming rollback |
+
+Known limitations: a federated identity with `automations:run` can use up the per-automation
+hourly run cap (60 by default) and thereby delay other triggers of that automation; the owner can
+revoke the identity. The dashboard stores the API token in an httpOnly, SameSite=Strict cookie (Secure over https);
+deploy it behind TLS. Private repositories and GitHub App installations are not supported.

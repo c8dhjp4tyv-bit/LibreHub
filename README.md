@@ -326,3 +326,26 @@ manages commit rewriting/signing, publication and summary refresh. Developer pro
 See [supply-chain policy](docs/supply-chain.md), [attestations and offline verification](docs/attestations.md), [worker isolation](docs/build-isolation.md), [rebuild verification](docs/reproducible-builds.md), and [verification/recovery](docs/m6-verification.md).
 Cryptographic provenance is separate from publisher identity, vulnerability analysis,
 moderation and application safety. Legacy releases carry no fabricated build evidence.
+
+## M7 automation and integrations
+
+LibreHub now runs versioned, durable release workflows and integrates with external CI.
+See [automation](docs/automation.md), [GitHub Actions and the CLI](docs/github-actions.md),
+[OIDC federation](docs/oidc-federation.md), [integrations](docs/integrations.md),
+[outbound webhooks](docs/outbound-webhooks.md), [release promotion and approvals](docs/release-promotion.md)
+and [verification](docs/m7-verification.md).
+
+```bash
+cargo build --workspace --locked   # also builds target/debug/librehub
+export LIBREHUB_URL=http://127.0.0.1:8080
+printf '%s' "$LIBREHUB_TOKEN" | ./target/debug/librehub auth login --token-stdin
+./target/debug/librehub automation validate --file release.yml
+./target/debug/librehub automation create --project "$PROJECT" --file release.yml
+./target/debug/librehub automation run --project "$PROJECT" "Release Pipeline" --wait-for publish-beta
+./target/debug/librehub approval list && ./target/debug/librehub approval approve <ID>
+```
+
+Set `LIBREHUB_OIDC_AUDIENCE` to enable GitHub Actions federation, `LIBREHUB_AUTOMATION_SCHEDULER=disabled`
+to stop schedule evaluation, and see the docs for `LIBREHUB_WEBHOOK_*`. The developer dashboard is served by the
+web app at `/dashboard` (API token kept in an httpOnly cookie). Deferred to M8 and later: GitHub App
+installations and check-run updates, teams, a distributed scheduler/broker, PostgreSQL and horizontal scaling.

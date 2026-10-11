@@ -752,6 +752,13 @@ pub fn validate(spec: &WorkflowSpec) -> Result<(), WorkflowError> {
             "require_build_success cannot be disabled",
         );
     }
+    // M5 moderation is an operator decision; a workflow cannot opt out of honouring it.
+    if !spec.policy.require_no_blocking_moderation {
+        return err(
+            "workflow_invalid",
+            "require_no_blocking_moderation cannot be disabled",
+        );
+    }
     Ok(())
 }
 fn check_patterns(patterns: &[String]) -> Result<(), WorkflowError> {
@@ -1001,6 +1008,15 @@ mod tests {
                 "name: x\ntriggers: [{bad}]\nsteps:\n  - {{id: build, uses: librehub/build}}\n"
             );
             assert_eq!(parse(&text).unwrap_err().code, "schedule_invalid", "{bad}");
+        }
+    }
+    #[test]
+    fn moderation_and_build_success_gates_cannot_be_disabled() {
+        for flag in ["require_build_success", "require_no_blocking_moderation"] {
+            let text = format!(
+                "name: x\ntriggers: [{{type: manual}}]\nsteps:\n  - {{id: build, uses: librehub/build}}\npolicy: {{{flag}: false}}\n"
+            );
+            assert_eq!(parse(&text).unwrap_err().code, "workflow_invalid", "{flag}");
         }
     }
     #[test]

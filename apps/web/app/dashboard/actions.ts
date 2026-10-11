@@ -4,7 +4,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { apiBase } from "../../lib/catalog";
+import { apiBase, webBase } from "../../lib/catalog";
 import {
   DeveloperApiError,
   TOKEN_COOKIE,
@@ -41,7 +41,7 @@ export async function login(_: FormState, form: FormData): Promise<FormState> {
   (await cookies()).set(TOKEN_COOKIE, token, {
     httpOnly: true,
     sameSite: "strict",
-    secure: process.env.LIBREHUB_COOKIE_SECURE !== "0" && new URL(apiBase).protocol === "https:",
+    secure: new URL(webBase).protocol === "https:",
     path: "/dashboard",
     maxAge: 8 * 3600,
   });

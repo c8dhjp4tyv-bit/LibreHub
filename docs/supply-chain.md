@@ -72,3 +72,11 @@ M1–M6 and hardened acceptance checks, inspect recorded SDK/runtime/tool versio
 and deliberately update the operator's allowed image configuration ID. Preserve
 old images for intended rebuilds. Changing a tag alone cannot rewrite historical
 build evidence, and a missing old image yields an inconclusive rebuild.
+
+## M7 automation and policy
+
+`verify-provenance` waits for the M6 build attestation and, with `require_allowed_builder`, requires a
+policy decision without violations; `require_valid_build_attestation` makes missing evidence a permanent
+failure. Publication still passes M6 admission inside M2, so automation cannot bypass it. Stable
+promotion produces a separate release attestation (never the beta one), awaited by the `promote`
+step. `librehub verify` checks the DSSE bundle with explicit trust roots (`--trusted-keys`).

@@ -162,3 +162,26 @@ See [trust.md](trust.md), [sbom.md](sbom.md), [vulnerability-analysis.md](vulner
 See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
 Cryptographic provenance is separate from publisher identity, vulnerability analysis,
 moderation and application safety. Legacy releases carry no fabricated build evidence.
+
+## M7 automation and integrations
+
+```mermaid
+flowchart TD
+    A["GitHub OIDC / signed webhook / schedule / developer API"] --> B["Authenticated admission (idempotent run key)"]
+    B --> C["Durable run + immutable definition version (SQLite)"]
+    C --> D["Resolve immutable commit (M3 provider)"]
+    D --> E["M3 source event -> M1 build (reused per commit)"]
+    E --> F["M6 provenance check"] --> G["M2 beta publication"] --> H["M5 analysis gate"]
+    H --> I["Persisted approval bound to the release candidate"] --> J["M2 stable publication + M6 release attestation"]
+    J --> K["M4 catalog (existing indexer)"]
+    C & E & G & J --> L["Transactional event outbox"] --> M["Signed, retrying webhook delivery"]
+```
+
+`services/automation` holds the pure logic (workflow schema, state machines, schedules, OIDC
+verification, webhook primitives). The API adds three durable workers to the existing
+supervisors: the **automation supervisor** (also the scheduler), and the **outbound delivery
+worker** (outbox fan-out plus sender). All state lives in migration 007; M1–M6 tables gain
+only SQLite triggers that append to `event_outbox` in the same transaction as the state change.
+The supervisor never executes user commands: steps call existing store admissions. `librehub`
+(`services/cli`) is a thin client of the public API. Operators can still run exactly one
+supervisor per data directory; no broker is introduced. See [automation.md](automation.md).

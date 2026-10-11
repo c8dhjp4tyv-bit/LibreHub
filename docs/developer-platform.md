@@ -106,3 +106,11 @@ semantics. See metadata.md for accepted standard files and catalog.md for public
 See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
 Cryptographic provenance is separate from publisher identity, vulnerability analysis,
 moderation and application safety. Legacy releases carry no fabricated build evidence.
+
+## M7 automation
+
+Automations extend this platform: a verified push/tag webhook (above) can also start a durable
+workflow run, keyed by the GitHub delivery ID and sharing the M3 build for the same commit. New
+scopes: `automations:read|write|run`, `integrations:read|write`, `releases:approve`. Federated CI
+credentials are project-bound and short-lived. See [automation.md](automation.md),
+[oidc-federation.md](oidc-federation.md) and [github-actions.md](github-actions.md).

@@ -61,9 +61,9 @@ Validation (`librehub automation validate --file wf.yaml`, and again on the serv
   false` is set explicitly, and a preceding beta `publish` while
   `require_successful_beta_publication` (default true) holds.
 
-`policy` flags: `require_build_success` (always true), `require_valid_build_attestation`,
+`policy` flags: `require_build_success` and `require_no_blocking_moderation` (both always true; they cannot be disabled), `require_valid_build_attestation`,
 `require_allowed_builder`, `require_successful_beta_publication`,
-`require_security_analysis_complete`, `require_no_blocking_moderation` (default true),
+`require_security_analysis_complete`,
 `require_manual_approval` (default true) and `release_approvers` (up to 8 developer IDs).
 
 ## Versions and admission
