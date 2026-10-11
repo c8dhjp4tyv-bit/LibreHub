@@ -120,5 +120,18 @@ def verify():
         print((STATE / 'api.log').read_text()[-3000:].replace(token, '[REDACTED]'))
 
 
+def claims():
+    """Print the non-secret claims of this job's identity token (never the token itself)."""
+    import base64
+    url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=' + AUDIENCE
+    request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        token = json.loads(response.read())['value']
+    head, payload, _ = token.split('.')
+    pad = lambda part: part + '=' * (-len(part) % 4)
+    print('header', json.loads(base64.urlsafe_b64decode(pad(head))))
+    print('claims', json.dumps(json.loads(base64.urlsafe_b64decode(pad(payload))), indent=1, sort_keys=True))
+
+
 if __name__ == '__main__':
-    {'prepare': prepare, 'verify': verify}[sys.argv[1]]()
+    {'prepare': prepare, 'verify': verify, 'claims': claims}[sys.argv[1]]()

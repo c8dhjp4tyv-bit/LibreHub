@@ -62,6 +62,8 @@ jobs:
       - run: cargo build --locked -p librehub-api -p librehub-cli
       - name: Start LibreHub and trust this repository's workflow identity
         run: python3 scripts/ci-github-oidc.py prepare
+      - name: Show this job's non-secret identity claims
+        run: python3 scripts/ci-github-oidc.py claims
       - name: Run the LibreHub composite action with the real OIDC identity
         id: librehub
         continue-on-error: ${{ github.event_name == 'pull_request' }}
