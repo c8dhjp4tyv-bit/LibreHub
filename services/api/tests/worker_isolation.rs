@@ -50,6 +50,14 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
             [project.to_string()],
         )
         .unwrap();
+    // SQLite allows a BLOB even in TEXT-affinity columns. This must be
+    // quarantined as a row-level decoding error instead of aborting the batch.
+    env.db()
+        .execute(
+            "INSERT INTO event_outbox(event_id,dedupe_key,project_id,event_type,subject_id,data,origin_kind,correlation_id,chain_depth,created_at) VALUES('00000000-0000-0000-0000-000000000001','poison-blob',?1,'project.archived','s',X'FF','system','c',0,'2026-01-01T00:00:00Z')",
+            [project.to_string()],
+        )
+        .unwrap();
     env.spawn_workers();
     let view = env.wait_run(project, &run, &["waiting_for_build"]).await;
     let build: BuildId = view["build_id"].as_str().unwrap().parse().unwrap();
@@ -85,7 +93,7 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
                     |r| r.get(0),
                 )
                 .unwrap();
-            if quarantined == 2 {
+            if quarantined == 4 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -139,6 +147,11 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
         )
         .unwrap();
     assert_eq!(consumer_count, 2);
+    let quarantined_events: i64 = env
+        .db()
+        .query_row("SELECT count(DISTINCT seq) FROM outbox_quarantine", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(quarantined_events, 2);
     assert!(
         !env.shutdown.is_cancelled(),
         "a worker failure must not cancel the shared shutdown"
