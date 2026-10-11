@@ -233,6 +233,7 @@ impl AutomationWorker {
                 .await;
         }
         if ctx.run.status == AutomationRunStatus::Queued {
+            crate::fault::barrier(&self.store.data_dir, "trigger_admitted").await;
             self.store
                 .run_transition(id, AutomationRunStatus::Running, None, None)
                 .await?;
@@ -282,6 +283,9 @@ impl AutomationWorker {
             self.apply(&fresh, current, outcome).await?;
             if fatal {
                 return Ok(());
+            }
+            if finished && fresh.spec.step(&step_id).is_some_and(|s| s.uses == StepKind::Build) {
+                crate::fault::barrier(&self.store.data_dir, "after_build_complete").await;
             }
             if finished {
                 satisfied.insert(step_id);
@@ -675,11 +679,13 @@ impl AutomationWorker {
             }
         }
         // 2. Admit (or reuse) exactly one M3 source event for this commit.
+        crate::fault::barrier(&self.store.data_dir, "before_source_bind").await;
         let binding = self
             .store
             .bind_source_for_run(run.id, reuse)
             .await
             .map_err(failure_of)?;
+        crate::fault::barrier(&self.store.data_dir, "after_build_bound").await;
         if binding.created {
             self.source_wake.notify_one();
         }
@@ -996,6 +1002,7 @@ impl AutomationWorker {
             Some(id) => id,
             None => {
                 self.preflight(ctx, Channel::Beta).await?;
+                crate::fault::barrier(&self.store.data_dir, "before_beta_publication").await;
                 let record = self
                     .store
                     .enqueue_publish(build_id, RepositoryChannel::Beta)
@@ -1005,6 +1012,7 @@ impl AutomationWorker {
                     .bind_publication(ctx.run.id, RepositoryChannel::Beta, record.id)
                     .await
                     .map_err(failure_of)?;
+                crate::fault::barrier(&self.store.data_dir, "after_beta_publication").await;
                 publishing.wake.notify_one();
                 record.id
             }
@@ -1201,7 +1209,8 @@ impl AutomationWorker {
             None => {
                 // Nothing may be requested for a run whose policy has been superseded.
                 self.preflight(ctx, Channel::Stable).await?;
-                self.store
+                let requested = self
+                    .store
                     .request_approval(
                         ctx.run.id,
                         step.id.clone(),
@@ -1210,7 +1219,9 @@ impl AutomationWorker {
                         requested_by,
                     )
                     .await
-                    .map_err(failure_of)?
+                    .map_err(failure_of)?;
+                crate::fault::barrier(&self.store.data_dir, "awaiting_approval").await;
+                requested
             }
         };
         let summary = json!({"approval_id":approval.id,"approval_status":approval.status,"expires_at":approval.expires_at});
@@ -1278,6 +1289,7 @@ impl AutomationWorker {
             None => {
                 self.preflight(ctx, Channel::Stable).await?;
                 self.authorize_promotion(ctx, step).await?;
+                crate::fault::barrier(&self.store.data_dir, "before_stable_publication").await;
                 let record = self
                     .store
                     .enqueue_publish(build_id, RepositoryChannel::Stable)

@@ -395,6 +395,7 @@ pub fn main_entry() -> ExitCode {
         }
     };
     let json = cli.json;
+    credentials::set_json_output(json);
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

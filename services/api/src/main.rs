@@ -125,6 +125,12 @@ async fn main() -> anyhow::Result<()> {
         outbound_policy,
         supervisor.shutdown.clone(),
     );
+    let mut outbound_worker = outbound_worker;
+    if let Ok(seconds) = std::env::var("LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS") {
+        let seconds: u64 = seconds.parse().context("Invalid LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS")?;
+        anyhow::ensure!((1..=60).contains(&seconds), "LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS must be 1–60");
+        outbound_worker.backoff_base = std::time::Duration::from_secs(seconds);
+    }
     let outbound_task = tokio::spawn(outbound_worker.clone().run());
     let verifier = oidc_from_env()?;
     let automation_router =

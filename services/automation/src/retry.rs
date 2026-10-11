@@ -54,7 +54,10 @@ pub const MAX_ATTEMPTS: u32 = 8;
 
 /// `jitter` is a value in `[0,1)`; the delay varies by ±25%. Deterministic for tests.
 pub fn backoff(attempt: u32, jitter: f64) -> Duration {
-    let exp = BASE_DELAY.as_secs_f64() * 2f64.powi(attempt.saturating_sub(1).min(16) as i32);
+    backoff_with(BASE_DELAY, attempt, jitter)
+}
+pub fn backoff_with(base: Duration, attempt: u32, jitter: f64) -> Duration {
+    let exp = base.as_secs_f64() * 2f64.powi(attempt.saturating_sub(1).min(16) as i32);
     let capped = exp.min(MAX_DELAY.as_secs_f64());
     let factor = 0.75 + 0.5 * jitter.clamp(0.0, 0.999_999);
     Duration::from_secs_f64((capped * factor).min(MAX_DELAY.as_secs_f64() * 1.25))

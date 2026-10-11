@@ -118,10 +118,20 @@ pub fn forget(client: &Client) -> Result<bool, CliError> {
 pub fn in_github_actions() -> bool {
     std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true")
 }
+static JSON_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// With `--json`, stdout carries exactly one JSON document, so runner commands move to stderr
+/// (the runner interprets workflow commands on either stream).
+pub fn set_json_output(json: bool) {
+    JSON_OUTPUT.store(json, std::sync::atomic::Ordering::Relaxed);
+}
 /// Make the runner hide a value in all later log output.
 pub fn mask(value: &str) {
     if in_github_actions() && !value.is_empty() && !value.contains(['\n', '\r']) {
-        println!("::add-mask::{value}");
+        if JSON_OUTPUT.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("::add-mask::{value}");
+        } else {
+            println!("::add-mask::{value}");
+        }
     }
 }
 

@@ -675,6 +675,7 @@ async fn decide(
         })
         .await
         .map_err(failure)?;
+    crate::fault::barrier(&s.store.data_dir, "after_approval_decision").await;
     s.wake.notify_one();
     Ok(Json(decided))
 }

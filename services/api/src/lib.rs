@@ -22,6 +22,7 @@ pub mod security_worker;
 pub mod supply_chain;
 pub mod supply_chain_http;
 
+pub mod fault;
 pub mod automation_http;
 pub mod automation_store;
 pub mod automation_worker;

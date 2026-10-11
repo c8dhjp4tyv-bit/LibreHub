@@ -201,6 +201,7 @@ pub struct OutboundWorker {
     pub running: Arc<AtomicBool>,
     pub concurrency: usize,
     pub max_attempts: u32,
+    pub backoff_base: Duration,
 }
 fn jitter() -> f64 {
     let mut b = [0u8; 4];
@@ -228,6 +229,7 @@ impl OutboundWorker {
             running: Arc::new(AtomicBool::new(false)),
             concurrency: 4,
             max_attempts: MAX_ATTEMPTS,
+            backoff_base: retry::BASE_DELAY,
         }
     }
     pub fn ready(&self) -> bool {
@@ -261,6 +263,7 @@ impl OutboundWorker {
                 self.store
                     .fan_out(event, self.store.automation_limits.max_chain_depth)
                     .await?;
+                crate::fault::barrier(&self.store.data_dir, "after_event_admission").await;
             }
             while let Some(done) = tasks.try_join_next() {
                 done??;
@@ -291,6 +294,7 @@ impl OutboundWorker {
         let started = Utc::now();
         let clock = Instant::now();
         tracing::info!(delivery_id=%delivery.id, project_id=%delivery.project_id, event_id=%delivery.event_id, attempt=delivery.attempt, "Delivering outbound webhook");
+        crate::fault::barrier(&self.store.data_dir, "during_delivery").await;
         let (outcome, status) = self.attempt(&delivery).await;
         let delivered = self
             .store
@@ -308,7 +312,7 @@ impl OutboundWorker {
     }
     async fn attempt(&self, delivery: &DueDelivery) -> (DeliveryOutcome, Option<u16>) {
         let retry = |reason: &'static str, hint: Option<Duration>| {
-            let computed = retry::backoff(delivery.attempt, jitter());
+            let computed = retry::backoff_with(self.backoff_base, delivery.attempt, jitter());
             DeliveryOutcome::Retry {
                 reason,
                 delay: hint.map_or(computed, |h| h.max(computed)),
