@@ -778,22 +778,39 @@ impl Store {
     }
 
     // ------------------------------------------------------------ outbox & deliveries
+    /// Read events in sequence for one independent consumer. A malformed *stored* event
+    /// is quarantined with its original row retained for operator inspection. Advance
+    /// only that consumer's cursor, and only when all preceding valid events have
+    /// already been handed back for transactional processing. Never skip valid events.
     pub async fn outbox_batch(
         &self,
         consumer: &'static str,
         limit: usize,
     ) -> anyhow::Result<Vec<OutboxEvent>> {
         self.run(move |db| {
-            let cursor: i64 = db.query_row("SELECT COALESCE((SELECT last_seq FROM outbox_cursors WHERE consumer=?1),0)", [consumer], |r| r.get(0))?;
-            type Row = (i64, String, String, String, String, String, Option<String>, Option<String>, Option<String>, Option<u32>, String);
+            let cursor: i64 = db.query_row(
+                "SELECT COALESCE((SELECT last_seq FROM outbox_cursors WHERE consumer=?1),0)",
+                [consumer],
+                |r| r.get(0),
+            )?;
+            type Row = (
+                i64, String, String, String, String, String,
+                Option<String>, Option<String>, Option<String>, Option<u32>, String,
+            );
             let rows: Vec<Row> = db
                 .prepare("SELECT seq,event_id,project_id,event_type,subject_id,data,origin_kind,origin_run_id,correlation_id,chain_depth,created_at FROM event_outbox WHERE seq>?1 ORDER BY seq LIMIT ?2")?
                 .query_map(params![cursor, limit as i64], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
+                        r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+                        r.get(8)?, r.get(9)?, r.get(10)?,
+                    ))
                 })?
                 .collect::<Result<_, _>>()?;
-            rows.into_iter()
-                .map(|(seq, event, project, kind, subject, data, ok, orun, corr, depth, at)| {
+
+            let mut valid = Vec::with_capacity(rows.len());
+            for (seq, event, project, kind, subject, data, ok, orun, corr, depth, at) in rows {
+                let decoded = (|| -> anyhow::Result<OutboxEvent> {
                     Ok(OutboxEvent {
                         seq,
                         event_id: event.parse()?,
@@ -807,8 +824,34 @@ impl Store {
                         chain_depth: depth,
                         created_at: t(&at)?,
                     })
-                })
-                .collect()
+                })();
+                match decoded {
+                    Ok(item) => valid.push(item),
+                    Err(error) => {
+                        // Previous valid events must be consumed (and individually
+                        // acknowledged) before this sequence is quarantined.
+                        if !valid.is_empty() {
+                            break;
+                        }
+                        let tx = db.transaction()?;
+                        tx.execute(
+                            "INSERT OR IGNORE INTO outbox_quarantine(consumer,seq,reason,quarantined_at) VALUES(?1,?2,'invalid_event_encoding',?3)",
+                            params![consumer, seq, now_s()],
+                        )?;
+                        tx.execute(
+                            "INSERT INTO outbox_cursors(consumer,last_seq) VALUES(?1,?2) ON CONFLICT(consumer) DO UPDATE SET last_seq=MAX(last_seq,excluded.last_seq)",
+                            params![consumer, seq],
+                        )?;
+                        tx.commit()?;
+                        tracing::error!(
+                            consumer, seq, error = %error,
+                            "Invalid durable outbox event quarantined; original event retained for operator inspection"
+                        );
+                        return Ok(Vec::new());
+                    }
+                }
+            }
+            Ok(valid)
         })
         .await
     }
@@ -1118,7 +1161,7 @@ impl Store {
         self.run(|db| {
             let cutoff = (Utc::now() - chrono::Duration::days(7)).to_rfc3339();
             Ok(db.execute(
-                "DELETE FROM event_outbox WHERE created_at<?1 AND seq<=COALESCE((SELECT MIN(last_seq) FROM outbox_cursors),0) AND (SELECT count(*) FROM outbox_cursors)>=2",
+                "DELETE FROM event_outbox WHERE created_at<?1 AND seq<=COALESCE((SELECT MIN(last_seq) FROM outbox_cursors),0) AND (SELECT count(*) FROM outbox_cursors)>=2 AND seq NOT IN (SELECT seq FROM outbox_quarantine)",
                 [cutoff],
             )?)
         })
