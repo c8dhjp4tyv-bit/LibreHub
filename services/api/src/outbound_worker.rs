@@ -287,7 +287,7 @@ impl WorkerHealth {
 
 /// Backoff for a failed dispatch step: 500 ms, doubling, capped at 30 s. A busy database is
 /// retried at this pace; it neither spins the worker nor ends it.
-fn loop_backoff(failures: u32) -> Duration {
+pub fn loop_backoff(failures: u32) -> Duration {
     let millis = 250u64.saturating_mul(1u64 << failures.min(10));
     Duration::from_millis(millis.min(30_000))
 }
