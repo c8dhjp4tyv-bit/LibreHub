@@ -153,3 +153,9 @@ LIBREHUB_API_PUBLIC_URL and LIBREHUB_WEB_PUBLIC_URL for real public origins. Off
 catalog rebuild never changes signed repository state. See catalog.md, store.md,
 metadata.md and m4-verification.md for the full publication → index → browser →
 normal client flow, resource limits and executable acceptance evidence.
+
+## M8: production serving and key lifecycle
+
+- nginx serves the signed repository as static content from `/var/lib/librehub/repository` (see `deploy/production/proxy/nginx.conf`). Immutable OSTree objects get a long cache lifetime; refs, indexes and the `.flatpakrepo` and `.flatpakref` files get a short one. The `.flatpakref` and `.flatpakrepo` files must name the production origin (`LIBREHUB_PUBLIC_BASE_URL`).
+- The repository GPG key lives in `/etc/librehub/gpg` and is mounted only into flat-manager. The public key is distributed as `/etc/librehub/public/repository.gpg`. Rotation, revocation and lost-key behaviour are in [disaster recovery](disaster-recovery.md#lost-signing-key).
+- Backups include `repo/` (signed content) and never the private key; see [backups](backups.md).

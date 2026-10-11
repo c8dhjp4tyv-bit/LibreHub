@@ -1,0 +1,7 @@
+# Runs when the backup unit fails. Replace the logger with your paging integration.
+[Unit]
+Description=Report a failed LibreHub backup (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger -t librehub-backup -p user.crit "LibreHub backup failed: %i"

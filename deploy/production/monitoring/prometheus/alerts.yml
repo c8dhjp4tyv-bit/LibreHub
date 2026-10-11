@@ -1,0 +1,160 @@
+# Alert rules use the metrics exported by services/api/src/ops.rs and the queue states the code writes,
+# with one exception: LibreHubBackupStale reads a textfile metric written by the backup script (see its comment).
+# Thresholds are starting points for a single-controller deployment; tune them from your own baseline
+# (docs/monitoring.md explains each rule and its limits).
+groups:
+  - name: librehub-availability
+    rules:
+      - alert: LibreHubApiDown
+        expr: up{job="librehub-api"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: LibreHub API is not answering its metrics endpoint
+          runbook: docs/operations.md#api-unavailable
+
+      - alert: LibreHubNotReady
+        expr: librehub_ready == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: LibreHub reports itself not ready (database, publishing or a required worker)
+          runbook: docs/operations.md#readiness
+
+      - alert: LibreHubHighServerErrorRate
+        expr: |
+          sum(rate(librehub_http_requests_total{status_class="5xx"}[10m]))
+            / clamp_min(sum(rate(librehub_http_requests_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 5% of API requests are failing with 5xx
+
+      - alert: LibreHubSlowRequests
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(librehub_http_request_duration_seconds_bucket[10m]))) > 1
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: API p95 latency above 1 second for 15 minutes
+
+  - name: librehub-workers
+    rules:
+      - alert: LibreHubWorkerNotRunning
+        expr: librehub_worker_ready == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "A background worker ({{ $labels.worker }}) is not running"
+          runbook: docs/operations.md#worker-recovery
+
+      - alert: LibreHubWorkerDegraded
+        expr: librehub_worker_degraded == 1
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "Worker {{ $labels.worker }} stopped itself: {{ $labels.reason }}"
+          runbook: docs/disaster-recovery.md#corrupted-database
+
+      - alert: LibreHubBuildQueueStalled
+        expr: sum(librehub_queue_items{queue="builds",state=~"queued|validating|building"}) > 0
+        for: 60m
+        labels: {severity: warning}
+        annotations:
+          summary: Builds have been waiting or running for an hour; check the builder and its quotas
+
+      - alert: LibreHubPublicationsFailing
+        expr: increase(librehub_queue_items{queue="publications",state="failed"}[1h]) > 0 or librehub_queue_items{queue="publications",state="failed"} > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: Publications are failing; see docs/operations.md#failed-publications
+
+      - alert: LibreHubAutomationQueueStalled
+        expr: sum(librehub_queue_items{queue="automation_runs",state=~"queued|waiting_approval|running"}) > 20
+        for: 60m
+        labels: {severity: warning}
+        annotations:
+          summary: Automation runs are piling up; check approvals and the step concurrency limit
+
+      - alert: LibreHubApprovalBacklog
+        expr: sum(librehub_queue_items{queue="automation_approvals",state="pending"}) > 10
+        for: 24h
+        labels: {severity: info}
+        annotations:
+          summary: Stable release approvals have waited a day; a human reviewer is needed
+
+      - alert: LibreHubSecurityBacklog
+        expr: sum(librehub_queue_items{queue="security_analyses",state=~"pending|analyzing"}) > 50
+        for: 2h
+        labels: {severity: warning}
+        annotations:
+          summary: Security analyses are backing up; check the vulnerability source
+
+      - alert: LibreHubAttestationFailures
+        expr: librehub_queue_items{queue="attestations",state="failed"} > 0
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: Attestations failed to produce or verify; check the attestor and key provisioning
+          runbook: docs/disaster-recovery.md#lost-attestor-key
+
+  - name: librehub-webhooks
+    rules:
+      - alert: LibreHubWebhookDeadLetters
+        expr: librehub_queue_items{queue="webhook_deliveries",state="dead_letter"} > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Outbound webhook deliveries have exhausted their retries; see docs/operations.md#webhook-retries
+
+      - alert: LibreHubWebhookFailuresRising
+        expr: sum(increase(librehub_webhook_failures_total[30m])) > 10
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Outbound webhook task failures are rising; check the logs for the failure category
+
+      - alert: LibreHubOutboxBacklog
+        expr: librehub_outbox_backlog_events > 1000
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Transactional outbox is not being admitted for webhook delivery
+
+  - name: librehub-capacity
+    rules:
+      - alert: LibreHubDiskLow
+        expr: librehub_disk_available_bytes / clamp_min(librehub_disk_total_bytes, 1) < 0.10
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Less than 10% of the data directory's disk is free
+          runbook: docs/operations.md#disk-exhaustion
+
+      - alert: LibreHubDiskCritical
+        expr: librehub_disk_available_bytes / clamp_min(librehub_disk_total_bytes, 1) < 0.03
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: Less than 3% of the data directory's disk is free; new builds are being refused
+          runbook: docs/operations.md#disk-exhaustion
+
+      - alert: LibreHubDatabaseLarge
+        expr: librehub_database_bytes > 0.5 * librehub_disk_total_bytes
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The control-plane database is over half the size of its disk; plan capacity
+
+  - name: librehub-backups
+    rules:
+      - alert: LibreHubBackupStale
+        # Requires the node exporter textfile collector to read /var/lib/prometheus/textfile/librehub.prom,
+        # which scripts/librehub-backup.sh writes after every successful run. See docs/backups.md.
+        expr: time() - librehub_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: No successful LibreHub backup in the last 26 hours
+          runbook: docs/backups.md

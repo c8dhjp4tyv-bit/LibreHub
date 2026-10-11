@@ -233,3 +233,54 @@ jobs:
       - name: Remove ephemeral keys and services
         if: always()
         run: docker compose down --volumes
+  production-profile:
+    # M8: validates the shipped production configuration, the operator scripts, the TLS proxy and the
+    # production Compose file. No production secret exists anywhere in this job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: production-profile
+      - run: cargo build --locked -p librehub-api --bin librehub-api
+      - name: Lint the operator scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck deploy/production/scripts/*.sh
+      - name: Validate the shipped production template and refuse unsafe settings
+        run: bash deploy/production/scripts/ci-validate.sh target/debug/librehub-api
+      - name: Validate the production Compose file with pinned placeholder images
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/secrets" "$work/gpg" "$work/repo"
+          for f in flat-manager-config.json flat-manager-db-password grafana-admin-password; do printf 'x' > "$work/secrets/$f"; done
+          digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
+          sed -e "s|/etc/librehub/secrets|$work/secrets|g" -e "s|/etc/librehub/gpg|$work/gpg|g" \
+              -e "s|/var/lib/librehub/repository|$work/repo|g" deploy/production/compose.yaml > "$work/compose.yaml"
+          cp -r deploy/production/monitoring "$work/"
+          export LIBREHUB_WEB_IMAGE=librehub-web@$digest LIBREHUB_POSTGRES_IMAGE=postgres@$digest \
+                 LIBREHUB_FLAT_MANAGER_IMAGE=flat-manager@$digest LIBREHUB_PROMETHEUS_IMAGE=prom/prometheus@$digest \
+                 LIBREHUB_ALERTMANAGER_IMAGE=prom/alertmanager@$digest LIBREHUB_GRAFANA_IMAGE=grafana/grafana@$digest \
+                 LIBREHUB_API_PUBLIC_URL=https://api.librehub.example LIBREHUB_WEB_PUBLIC_URL=https://librehub.example
+          docker compose -f "$work/compose.yaml" config --quiet
+      - name: Validate the TLS proxy with the pinned nginx image
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/live/librehub.example"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=librehub.example" \
+            -keyout "$work/live/librehub.example/privkey.pem" -out "$work/live/librehub.example/fullchain.pem" 2>/dev/null
+          docker run --rm \
+            -v "$PWD/deploy/production/proxy:/etc/librehub/proxy:ro" \
+            -v "$work/live:/etc/letsencrypt/live:ro" \
+            -v "$PWD/deploy/production/proxy/nginx.conf:/etc/nginx/conf.d/librehub.conf:ro" \
+            nginx:1.28.0-alpine nginx -t
+      - name: Validate the monitoring rules and dashboard
+        run: |
+          python3 -m pip install --break-system-packages pyyaml==6.0.2
+          python3 -c "import yaml, json, pathlib; base = pathlib.Path('deploy/production/monitoring'); [yaml.safe_load(p.read_text()) for p in [*base.rglob('*.yml'), *base.rglob('*.yaml')]]; json.loads((base / 'grafana/dashboards/librehub-production.json').read_text()); print('monitoring configuration parses')"

@@ -80,3 +80,11 @@ policy decision without violations; `require_valid_build_attestation` makes miss
 failure. Publication still passes M6 admission inside M2, so automation cannot bypass it. Stable
 promotion produces a separate release attestation (never the beta one), awaited by the `promote`
 step. `librehub verify` checks the DSSE bundle with explicit trust roots (`--trusted-keys`).
+
+## M8: production provisioning
+
+- The attestor seed is created once by `librehub-admin attestor provision`, which refuses to overwrite an existing seed or public bundle. A restart never creates a new identity.
+- The seed is a secret (owner-readable only). The public key bundle is public and is distributed with the release.
+- Production requires `LIBREHUB_SUPPLY_CHAIN_POLICY=enforce` and `LIBREHUB_WORKER_ISOLATION=hardened`; the production profile refuses any other value.
+- Loss and rotation of the attestor key are in [disaster recovery](disaster-recovery.md#lost-attestor-key).
+- Migration 006 (M6 evidence) now applies atomically.

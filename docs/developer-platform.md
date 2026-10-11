@@ -114,3 +114,7 @@ workflow run, keyed by the GitHub delivery ID and sharing the M3 build for the s
 scopes: `automations:read|write|run`, `integrations:read|write`, `releases:approve`. Federated CI
 credentials are project-bound and short-lived. See [automation.md](automation.md),
 [oidc-federation.md](oidc-federation.md) and [github-actions.md](github-actions.md).
+
+## M8: capacity admission
+
+New builds are refused with `503 storage_capacity_low` when free space on the data directory is below `LIBREHUB_MIN_FREE_BYTES` (default 512 MiB; the production template sets 2 GiB). The refusal is bounded and visible in `librehub_disk_available_bytes`; work is not queued without limit. Automation admission and publication admission are not yet guarded by this check; they remain bounded by their own per-project limits. See [capacity planning](capacity-planning.md#limits-in-this-release).

@@ -160,3 +160,9 @@ Errors are `{code, message}` with stable codes (`workflow_cycle`, `automation_qu
 
 See [the CLI](github-actions.md#cli) for `librehub automation …` and the dashboard under
 `/dashboard`.
+
+## M8: supervisor isolation
+
+The automation supervisor no longer ends the process on a failed tick or a panicked run. A failed tick (for example a database error reading the outbox or a due schedule) backs off and retries; a panicked run is recorded and retried on the next tick, and its durable state is unchanged. Only corrupt storage stops the supervisor, and then it waits for shutdown with `/ready` reporting the component unavailable. Verified by `services/api/tests/worker_isolation.rs`.
+
+A malformed outbox event for the automation consumer blocks that consumer until the row is repaired, and the process stays up. The row is never dropped silently. Automatic quarantine of malformed events is not implemented in M8.

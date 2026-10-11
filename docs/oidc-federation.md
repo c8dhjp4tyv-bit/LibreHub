@@ -95,3 +95,14 @@ created. A run triggered with such a credential takes its commit and ref from th
 Audit (`GET /api/v1/projects/{id}/integrations/audit`, also mirrored into `/audit`):
 `oidc.exchange_succeeded`, `oidc.exchange_denied` (with reason), `integration.created|updated|disabled|revoked`.
 Tokens and identity tokens are never stored or logged.
+
+## M8: policy changes revoke credentials
+
+- Any real change to the normalised identity policy revokes every live credential minted through that connection, in the same transaction as the policy change. The changed dimensions include the allowed branches (refs), workflows, environments, event types, permissions, the repository owner and the credential lifetime. Reordering a list, or saving an unchanged policy, has no side effect.
+- Disabling or deleting the connection revokes its credentials, and re-enabling never restores a revoked credential. A new exchange under the enabled policy succeeds.
+- Credentials of other connections in the same project are unaffected.
+- Authentication re-checks the owning integration on every request. A disabled or revoked integration rejects its credentials even if a revocation were somehow missed.
+- The revocation writes one audit entry, `integration.credentials_revoked`, with the count of credentials revoked. It never contains a token identifier or a secret.
+- An exchange and a policy update are serialised by the control-plane connection, so an exchange cannot commit under a policy that the update has already replaced.
+
+Verified by `services/api/tests/policy_revocation.rs`. Operator commands are in [operations](operations.md#oidc-integration-revocation).

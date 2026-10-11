@@ -1,0 +1,22 @@
+# One consistent, encrypted archive of the control plane and evidence. Runs beside the live API.
+[Unit]
+Description=LibreHub encrypted backup
+After=librehub-api.service
+Wants=librehub-api.service
+OnFailure=librehub-backup-failed@%n.service
+
+[Service]
+Type=oneshot
+User=librehub
+Group=librehub
+EnvironmentFile=/etc/librehub/librehub.env
+ExecStart=/usr/local/bin/librehub-backup.sh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/backups/librehub
+ReadOnlyPaths=/etc/librehub /var/lib/librehub
+PrivateTmp=yes
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=6h

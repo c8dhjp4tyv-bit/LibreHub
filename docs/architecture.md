@@ -185,3 +185,16 @@ only SQLite triggers that append to `event_outbox` in the same transaction as th
 The supervisor never executes user commands: steps call existing store admissions. `librehub`
 (`services/cli`) is a thin client of the public API. Operators can still run exactly one
 supervisor per data directory; no broker is introduced. See [automation.md](automation.md).
+
+## M8: production topology
+
+The reference deployment is a **single-controller** system. One `librehub-api` process owns the SQLite control plane, runs the supervisors (builds, source, publication, catalog, security, automation and outbound delivery), and serves the API. The web store, flat-manager and its PostgreSQL run in containers without host privileges. nginx is the only public listener. Diagrams and the security boundaries are in [production deployment](production-deployment.md#topology) and [production security](production-security.md#network-boundaries).
+
+Operational components added in M8:
+
+- `/live`, `/ready`, `/health` and a separate operator `/metrics` listener (`services/api/src/ops.rs`);
+- the production profile validator (`services/api/src/production.rs`);
+- `librehub-admin backup`, `verify-backup` and `restore` (`services/api/src/backup.rs`);
+- deployment assets under `deploy/production/`.
+
+Not part of M8: a PostgreSQL control plane, multiple controllers, and any high-availability claim.

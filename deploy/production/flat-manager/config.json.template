@@ -1,0 +1,32 @@
+{
+  "host": "0.0.0.0",
+  "port": 8080,
+  "base-url": "https://repo.librehub.example/flat-manager",
+  "database-url": "postgres://librehub:__FLAT_MANAGER_DB_PASSWORD__@flat-manager-database/librehub",
+  "secret": "__FLAT_MANAGER_TOKEN_SECRET__",
+  "repos": {
+    "stable": {
+      "path": "/repositories/repo/stable",
+      "gpg-key": "__REPOSITORY_GPG_FINGERPRINT__",
+      "collection-id": null,
+      "suggested-repo-name": "librehub",
+      "runtime-repo-url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
+      "base-url": "https://repo.librehub.example/repo/stable/",
+      "subsets": {}
+    },
+    "beta": {
+      "path": "/repositories/repo/beta",
+      "gpg-key": "__REPOSITORY_GPG_FINGERPRINT__",
+      "collection-id": null,
+      "suggested-repo-name": "librehub-beta",
+      "runtime-repo-url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
+      "base-url": "https://repo.librehub.example/repo/beta/",
+      "subsets": {}
+    }
+  },
+  "build-repo-base": "/repositories/builds",
+  "build-gpg-key": "__REPOSITORY_GPG_FINGERPRINT__",
+  "gpg-homedir": "/run/librehub/gnupg",
+  "delay-update-secs": 0,
+  "workers": 2
+}

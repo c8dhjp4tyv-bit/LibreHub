@@ -70,3 +70,16 @@ and connection errors retry with exponential backoff (5 s base, 15 min cap, ±25
 destinations are `failed` immediately. On restart, `delivering` rows become retryable. History
 (attempts, status, safe error codes) is kept for the latest 1,000 deliveries per webhook.
 `POST …/deliveries/{id}/replay` re-sends a finished delivery as a new delivery of the same event.
+
+## M8: failure isolation and recovery
+
+A delivery attempt is the unit of failure.
+
+- **Recorded categories.** A returned error, a panic and a cancellation are each recorded with a stable category (`storage_busy`, `storage_full`, `storage_corrupt`, `storage`, `internal`, `task_panic`, `task_cancelled`). The category is written to the delivery's `last_error`, logged with the delivery identity, and counted in `librehub_webhook_failures_total`. Categories never contain destination or payload text.
+- **Recovery.** The attempt is made due again (or dead-lettered once its budget is spent) with the same delivery and event identity. A `dead_letter` after repeated panics or storage failures is audited as `webhook.delivery_failed`.
+- **Leases.** A claimed attempt records a lease of 120 seconds. An attempt that a running process abandons (its task panicked, was cancelled, or its result could not be written) is reclaimed when the lease expires. A process restart reclaims every attempt at once.
+- **Fencing.** A result is written only if the row is still the attempt that claimed it. A late result from a reclaimed attempt is discarded (`superseded`) and never overwrites a newer attempt.
+- **Storage contention.** Recording a result retries briefly on `SQLITE_BUSY`. Dispatch-loop errors back off (500 ms, doubling, capped at 30 s). Only `SQLITE_CORRUPT` or `NOTADB` degrades the worker; the process stays up, and `/ready` and the metrics report the degraded state.
+- **Shutdown.** The worker drains in-flight attempts, each bounded by its deadlines, and returns cleanly. The shared shutdown token is never cancelled by a delivery failure.
+
+Verified by `services/api/tests/webhook_isolation.rs`: a result write that fails for one hook, a panicking transport, a lock held by another connection, an attempt stalled past its lease, and repeated failure reaching dead-letter.
