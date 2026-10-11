@@ -431,7 +431,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher),"automation_worker":component(automation_ok),"scheduler":scheduler,"webhook_delivery":webhook_capability}}),
+            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher),"automation_worker":component(automation_ok),"scheduler":scheduler,"outbound_delivery":webhook_capability}}),
         ),
     )
 }

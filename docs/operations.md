@@ -22,7 +22,7 @@ journalctl -u librehub-api.service -o cat -n 200   # JSON lines when LIBREHUB_LO
 | `GET /health` | Legacy status (`ok` or `stopping`). | Public through nginx. |
 | `GET /metrics` | Prometheus exposition. | Operator listener only. |
 
-Webhook delivery is reported under `components.webhook_delivery` as `ok`, `degraded` or `unavailable`. A degraded webhook worker does not make the instance unready.
+Webhook delivery is reported under `components.outbound_delivery` (the M7 name, kept for existing tooling) as `ok`, `degraded` or `unavailable`. A degraded webhook worker does not make the instance unready.
 
 ## Configuration
 
