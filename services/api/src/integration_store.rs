@@ -797,34 +797,43 @@ impl Store {
                 i64, String, String, String, String, String,
                 Option<String>, Option<String>, Option<String>, Option<u32>, String,
             );
-            let rows: Vec<Row> = db
+            // Isolate decoding failures to their own row. SQLite permits BLOBs in
+            // TEXT-affinity columns, so even a column type mismatch must not poison
+            // the entire result batch before we can record its sequence.
+            let rows: Vec<(i64, rusqlite::Result<Row>)> = db
                 .prepare("SELECT seq,event_id,project_id,event_type,subject_id,data,origin_kind,origin_run_id,correlation_id,chain_depth,created_at FROM event_outbox WHERE seq>?1 ORDER BY seq LIMIT ?2")?
                 .query_map(params![cursor, limit as i64], |r| {
-                    Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
-                        r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
-                        r.get(8)?, r.get(9)?, r.get(10)?,
-                    ))
+                    let seq: i64 = r.get(0)?;
+                    let record = (|| -> rusqlite::Result<Row> {
+                        Ok((
+                            seq, r.get(1)?, r.get(2)?, r.get(3)?,
+                            r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+                            r.get(8)?, r.get(9)?, r.get(10)?,
+                        ))
+                    })();
+                    Ok((seq, record))
                 })?
                 .collect::<Result<_, _>>()?;
 
             let mut valid = Vec::with_capacity(rows.len());
-            for (seq, event, project, kind, subject, data, ok, orun, corr, depth, at) in rows {
-                let decoded = (|| -> anyhow::Result<OutboxEvent> {
-                    Ok(OutboxEvent {
-                        seq,
-                        event_id: event.parse()?,
-                        project_id: project.parse()?,
-                        event_type: kind,
-                        subject_id: subject,
-                        data: serde_json::from_str(&data)?,
-                        origin_kind: ok,
-                        origin_run_id: orun,
-                        correlation_id: corr,
-                        chain_depth: depth,
-                        created_at: t(&at)?,
-                    })
-                })();
+            for (seq, row) in rows {
+                let decoded = row
+                    .map_err(anyhow::Error::from)
+                    .and_then(|(seq, event, project, kind, subject, data, ok, orun, corr, depth, at)| {
+                        Ok(OutboxEvent {
+                            seq,
+                            event_id: event.parse()?,
+                            project_id: project.parse()?,
+                            event_type: kind,
+                            subject_id: subject,
+                            data: serde_json::from_str(&data)?,
+                            origin_kind: ok,
+                            origin_run_id: orun,
+                            correlation_id: corr,
+                            chain_depth: depth,
+                            created_at: t(&at)?,
+                        })
+                    });
                 match decoded {
                     Ok(item) => valid.push(item),
                     Err(error) => {
