@@ -1167,6 +1167,17 @@ impl Store {
         })
         .await
     }
+    /// Malformed outbox events retained for operator investigation, by independent consumer.
+    pub async fn outbox_quarantine_count(&self, consumer: &'static str) -> anyhow::Result<i64> {
+        self.run(move |db| {
+            Ok(db.query_row(
+                "SELECT count(*) FROM outbox_quarantine WHERE consumer=?1",
+                [consumer],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
     pub async fn delivery_queue_depth(&self) -> anyhow::Result<(i64, i64)> {
         self.run(|db| {
             let pending: i64 = db.query_row("SELECT count(*) FROM integration_deliveries WHERE status IN ('pending','retry_wait','delivering')", [], |r| r.get(0))?;
