@@ -15,6 +15,13 @@ done
 printf 'ci-stand-in\n' > "$PUBLIC/repository.gpg"; printf '{}\n' > "$PUBLIC/attestor-keys.json"
 chmod 0644 "$PUBLIC/repository.gpg" "$PUBLIC/attestor-keys.json"
 head -c 32 /dev/urandom > "$DATA/webhook.key"; chmod 0400 "$DATA/webhook.key"
+# The generated environment file exists only at run time, so it cannot be followed statically.
+load_env() {
+  set -a
+  # shellcheck source=/dev/null
+  . "$WORK/librehub.env"
+  set +a
+}
 # The shipped template, with its paths pointed at the stand-ins. Placeholders must be replaced by
 # the operator; CI only needs them to be syntactically valid.
 sed -e "s|/etc/librehub/secrets/|$SECRETS/|g" -e "s|/etc/librehub/public/|$PUBLIC/|g" \
@@ -22,14 +29,14 @@ sed -e "s|/etc/librehub/secrets/|$SECRETS/|g" -e "s|/etc/librehub/public/|$PUBLI
     -e "s|^LIBREHUB_DATABASE_PATH=.*|LIBREHUB_DATABASE_PATH=$DATA/builds.sqlite3|" \
     -e "s|^LIBREHUB_SIGNING_FINGERPRINT=.*|LIBREHUB_SIGNING_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567|" \
     "$HERE/env.example" > "$WORK/librehub.env"
-(set -a; . "$WORK/librehub.env"; set +a; "$API" --check-config) \
+(load_env; "$API" --check-config) \
   || { echo "FAIL  the shipped production template was rejected" >&2; exit 1; }
 echo "ok    shipped template passes production validation"
 
 refused() { # description, environment overrides...
   local description=$1; shift
   local status=0
-  (set -a; . "$WORK/librehub.env"; set +a; env "$@" "$API" --check-config >/dev/null 2>&1) || status=$?
+  (load_env; env "$@" "$API" --check-config >/dev/null 2>&1) || status=$?
   if [ "$status" -eq 2 ]; then
     echo "ok    refused: $description"
   else

@@ -13,7 +13,11 @@ ENV_FILE=/etc/librehub/librehub.env
 echo "stage 1/7: preflight"
 LIBREHUB_ENV_FILE=$ENV_FILE "$HERE/preflight.sh"
 echo "stage 2/7: validate the new binary's configuration before touching anything"
-set -a; . "$ENV_FILE"; set +a
+set -a
+# The environment file is the installed configuration, chosen at run time, so it cannot be followed statically.
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+set +a
 "$API" --check-config
 echo "stage 3/7: backup (online, verified)"
 /usr/local/bin/librehub-backup.sh

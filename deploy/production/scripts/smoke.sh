@@ -2,7 +2,11 @@
 # Post-start checks against the real listeners. Read-only. Exits non-zero on the first failure.
 set -euo pipefail
 ENV_FILE=${LIBREHUB_ENV_FILE:-/etc/librehub/librehub.env}
-set -a; . "$ENV_FILE"; set +a
+set -a
+# The environment file is chosen at run time (LIBREHUB_ENV_FILE), so it cannot be followed statically.
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+set +a
 API="http://${LIBREHUB_BIND:?}"
 METRICS="http://${LIBREHUB_METRICS_BIND:?}"
 PUBLIC_API=${LIBREHUB_PUBLIC_API_URL:-https://api.librehub.example}

@@ -6,7 +6,11 @@ failures=0
 check() { if "$@"; then echo "ok    $*"; else echo "FAIL  $*"; failures=$((failures + 1)); fi; }
 
 [ -r "$ENV_FILE" ] || { echo "FAIL  $ENV_FILE is not readable"; exit 1; }
-set -a; . "$ENV_FILE"; set +a
+set -a
+# The environment file is chosen at run time (LIBREHUB_ENV_FILE), so it cannot be followed statically.
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+set +a
 check /usr/local/bin/librehub-api --check-config
 for secret in /etc/librehub/secrets/flat-manager-config.json /etc/librehub/secrets/flat-manager-db-password \
               /etc/librehub/secrets/flat-manager-token-secret /etc/librehub/secrets/attestor-seed \
