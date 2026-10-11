@@ -114,19 +114,26 @@ pub fn is_internal(ip: IpAddr) -> bool {
     }
 }
 
-/// Secret files must be readable only by their owner. Checked on the real file system.
+/// Public material (repository and attestor public keys, a CA certificate) may be world-readable.
+/// Every other `*_FILE` variable names a secret and must be readable by its owner only.
+fn is_public_material(name: &str) -> bool {
+    name.contains("PUBLIC") || name.ends_with("KEYS_FILE") || name.ends_with("CA_FILE")
+}
+
+/// Check every `LIBREHUB_*_FILE` path on the real file system: it must exist and be a regular
+/// file, and secrets must not be readable by group or others.
 pub fn check_secret_files(vars: &Vars) -> Vec<String> {
     let mut problems = Vec::new();
-    for (name, path) in vars.iter().filter(|(name, _)| name.ends_with("_FILE")) {
-        if !name.starts_with("LIBREHUB_") {
-            continue;
-        }
+    for (name, path) in vars
+        .iter()
+        .filter(|(name, _)| name.starts_with("LIBREHUB_") && name.ends_with("_FILE"))
+    {
         match std::fs::metadata(path) {
             Ok(metadata) => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if metadata.permissions().mode() & 0o077 != 0 {
+                    if !is_public_material(name) && metadata.permissions().mode() & 0o077 != 0 {
                         problems.push(format!("{name} must not be readable by group or others"));
                     }
                 }
@@ -292,6 +299,57 @@ mod tests {
         let found =
             problems(&[("LIBREHUB_ENVIRONMENT".to_owned(), "production".to_owned())].into());
         assert!(found.len() >= 6, "{found:?}");
+    }
+
+    #[test]
+    fn secret_files_are_private_and_public_material_may_be_shared() {
+        let dir =
+            std::env::temp_dir().join(format!("librehub-secret-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("token");
+        let public = dir.join("repository.gpg");
+        std::fs::write(&secret, b"s").unwrap();
+        std::fs::write(&public, b"p").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o400)).unwrap();
+            std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let ok: Vars = [
+            (
+                "LIBREHUB_FLAT_MANAGER_TOKEN_FILE".to_owned(),
+                secret.display().to_string(),
+            ),
+            (
+                "LIBREHUB_SIGNING_PUBLIC_KEY_FILE".to_owned(),
+                public.display().to_string(),
+            ),
+        ]
+        .into();
+        assert!(
+            check_secret_files(&ok).is_empty(),
+            "{:?}",
+            check_secret_files(&ok)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let loose: Vars = [(
+            "LIBREHUB_FLAT_MANAGER_TOKEN_FILE".to_owned(),
+            secret.display().to_string(),
+        )]
+        .into();
+        assert_eq!(check_secret_files(&loose).len(), 1);
+        let missing: Vars = [(
+            "LIBREHUB_ATTESTOR_KEY_FILE".to_owned(),
+            dir.join("absent").display().to_string(),
+        )]
+        .into();
+        assert_eq!(check_secret_files(&missing).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
