@@ -59,6 +59,28 @@ curl -X POST -H "Authorization: Bearer $TOKEN" https://api.librehub.example/api/
 
 A `dead_letter` delivery has exhausted its attempts. Its last error is a stable category (for example `timeout`, `connect_error`, `task_panic`, `storage_busy`, `lease_expired`). Fix the receiver or the cause, then replay. Repeated `task_panic` or `storage_*` categories are an operator incident, not a receiver problem.
 
+## Outbox quarantine
+
+If a persisted outbox row contains an invalid event ID, project ID, timestamp or JSON payload,
+the automation and webhook consumers each quarantine that sequence **independently**. Valid
+events before that sequence are acknowledged first; later events can continue after quarantine.
+This is deliberate data-loss visibility, not proof that the skipped event had no side effects.
+The original row remains in `event_outbox`; quarantined sequences are excluded from routine
+7-day pruning. The `LibreHubOutboxQuarantine` alert persists until operator remediation.
+
+Inspect metadata using a read-only SQLite connection on the dedicated controller:
+
+```bash
+sqlite3 -readonly /var/lib/librehub/builds.sqlite3 \
+  'SELECT q.consumer,q.seq,q.reason,q.quarantined_at,e.event_type,e.project_id FROM outbox_quarantine q JOIN event_outbox e ON e.seq=q.seq ORDER BY q.seq;'
+```
+
+Review the matching original event, associated project state and related automation/delivery
+records. **Do not simply delete quarantine rows or advance cursors manually**: a malformed
+`project.archived` event or other policy-affecting event may require an explicit reconciliation.
+Preserve a verified backup before any operator repair. The original event was not dispatched by
+the affected consumer, and can require manual reconstruction of intended state.
+
 ## OIDC integration revocation
 
 ```bash
@@ -85,7 +107,7 @@ Symptoms: `librehub_disk_available_bytes` falls, builds return `503 storage_capa
 1. Confirm the usage: `df -h /var/lib/librehub /var/backups/librehub`.
 2. Do not delete evidence: the source snapshots, build logs, publication journals, SBOMs, attestations and the signed repository are needed for provenance and replay defence. Expand the volume, or move the backup destination off-host.
 3. A build whose container cleanup cannot be confirmed is marked `cleanup_pending`. The next start reconciles it before any new build is launched, and startup fails if the state is uncertain. Check `journalctl` for cleanup failures before manual work.
-4. The control-plane database is bounded by retention (outbox events older than seven days that every consumer has processed, and the most recent 1000 deliveries per subscription). Its size is in `librehub_database_bytes`.
+4. The control-plane database retains completed deliveries by policy and prunes ordinary outbox events only after both consumers advance. Quarantined events are retained indefinitely pending operator review; size is monitored through `librehub_database_bytes`.
 5. Admission resumes automatically once free space exceeds `LIBREHUB_MIN_FREE_BYTES`.
 
 ## Rebuilding catalog indexes
