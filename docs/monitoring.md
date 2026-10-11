@@ -13,6 +13,7 @@ The API exposes Prometheus metrics on `LIBREHUB_METRICS_BIND` (default `127.0.0.
 | `librehub_process_uptime_seconds` | gauge | | process |
 | `librehub_queue_items` | gauge | `queue`, `state` | control-plane tables at scrape time |
 | `librehub_outbox_backlog_events` | gauge | | outbox not yet admitted for delivery |
+| `librehub_outbox_quarantined_events` | gauge | `consumer` | unparseable durable events retained for operator review |
 | `librehub_worker_ready` | gauge | `worker` | outbound, automation, catalog, security |
 | `librehub_worker_degraded` | gauge | `worker`, `reason` | set when a worker stops itself |
 | `librehub_automation_outbox_failures_total` | counter | | failed automation outbox consumption attempts |
@@ -49,6 +50,7 @@ The webhook failure categories are `task_panic`, `task_cancelled`, `storage_busy
 | `LibreHubWebhookDeadLetters` | a delivery is dead-lettered for 15 minutes | inspect the last error category | [operations](operations.md#webhook-retries) |
 | `LibreHubWebhookFailuresRising` | more than 10 task failures in 30 minutes | read the journal for the category | operations |
 | `LibreHubOutboxBacklog` | more than 1000 events wait for admission for 15 minutes | check the outbound worker state | operations |
+| `LibreHubOutboxQuarantine` | one consumer has quarantined an invalid event | inspect the preserved original row and determine whether recovery is needed | [outbox quarantine](operations.md#outbox-quarantine) |
 | `LibreHubDiskLow` | less than 10% of the data disk is free for 15 minutes | expand storage or move backups off-host | [operations](operations.md#disk-exhaustion) |
 | `LibreHubDiskCritical` | less than 3% is free for 5 minutes | builds are being refused; act now | [operations](operations.md#disk-exhaustion) |
 | `LibreHubDatabaseLarge` | the database exceeds half the disk for an hour | plan capacity | [capacity planning](capacity-planning.md) |
