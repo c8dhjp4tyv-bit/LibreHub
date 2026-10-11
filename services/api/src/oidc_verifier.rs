@@ -15,14 +15,12 @@ pub const KEY_TTL: Duration = Duration::from_secs(600);
 pub const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 pub const MAX_STALE: Duration = Duration::from_secs(24 * 3600);
 const MAX_JWKS_BYTES: usize = 256 * 1024;
-const REQUESTS_PER_MINUTE: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
     Token(OidcError),
     /// The issuer's keys cannot be fetched and no usable cached copy exists.
     KeysUnavailable,
-    RateLimited,
 }
 
 #[async_trait]
@@ -86,7 +84,6 @@ pub struct OidcVerifier {
     pub config: OidcConfig,
     fetcher: Arc<dyn JwksFetcher>,
     cache: Mutex<Cache>,
-    window: Mutex<(Instant, usize)>,
 }
 impl OidcVerifier {
     pub fn new(config: OidcConfig, fetcher: Arc<dyn JwksFetcher>) -> Self {
@@ -98,16 +95,7 @@ impl OidcVerifier {
                 fetched_at: None,
                 last_attempt: None,
             }),
-            window: Mutex::new((Instant::now(), 0)),
         }
-    }
-    async fn admit(&self) -> bool {
-        let mut window = self.window.lock().await;
-        if window.0.elapsed() >= Duration::from_secs(60) {
-            *window = (Instant::now(), 0);
-        }
-        window.1 += 1;
-        window.1 <= REQUESTS_PER_MINUTE
     }
     /// Return current keys, refreshing when stale or forced (and permitted by the interval).
     async fn keys(&self, force: bool) -> Result<JwkSet, VerifyError> {
@@ -116,7 +104,7 @@ impl OidcVerifier {
         let may_refresh = cache
             .last_attempt
             .is_none_or(|t| t.elapsed() >= MIN_REFRESH_INTERVAL);
-        if cache.keys.is_none() || (!fresh && may_refresh) || (force && may_refresh) {
+        if may_refresh && (cache.keys.is_none() || !fresh || force) {
             cache.last_attempt = Some(Instant::now());
             match self.fetcher.fetch().await {
                 Ok(keys) => {
@@ -137,9 +125,6 @@ impl OidcVerifier {
         self.verify_at(token, chrono::Utc::now().timestamp()).await
     }
     pub async fn verify_at(&self, token: &str, now: i64) -> Result<GithubClaims, VerifyError> {
-        if !self.admit().await {
-            return Err(VerifyError::RateLimited);
-        }
         let keys = self.keys(false).await?;
         match oidc::verify_github_token(token, &keys, &self.config, now) {
             Err(OidcError::UnknownKey) => {
@@ -233,16 +218,28 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn requests_are_rate_limited() {
+    async fn anonymous_requests_do_not_exhaust_valid_token_verification() {
         let set = jwks(vec![jwk(&key_pair(SIGNING_KEY), "k1")]);
-        let (v, _) = verifier(vec![Some(set)]);
-        let mut limited = false;
-        for _ in 0..(REQUESTS_PER_MINUTE + 5) {
-            if v.verify_at("a.b.c", NOW).await == Err(VerifyError::RateLimited) {
-                limited = true;
-            }
+        let (v, fixture) = verifier(vec![Some(set)]);
+        for _ in 0..150 {
+            assert!(matches!(
+                v.verify_at("a.b.c", NOW).await,
+                Err(VerifyError::Token(_))
+            ));
         }
-        assert!(limited);
+        assert!(v.verify_at(&token("k1", SIGNING_KEY), NOW).await.is_ok());
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn outage_without_cache_still_limits_issuer_refreshes() {
+        let (v, fixture) = verifier(vec![None]);
+        for _ in 0..150 {
+            assert_eq!(
+                v.verify_at("a.b.c", NOW).await,
+                Err(VerifyError::KeysUnavailable)
+            );
+        }
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     }
     #[test]
     fn jwks_url_must_be_https() {

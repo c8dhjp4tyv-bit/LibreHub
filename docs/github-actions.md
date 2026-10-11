@@ -97,12 +97,12 @@ explicit, independent build.
 | Command | Backed by |
 | --- | --- |
 | `auth login --token-stdin` / `logout` / `status` | `GET /api/v1/whoami` |
-| `project list|show|create` | `/api/v1/projects` |
-| `build trigger|status|logs` (`--wait`, `--follow`) | `/projects/{id}/builds`, `/builds/{id}[/logs]` |
-| `publish beta|stable` (`--wait`; stable needs `--yes`) | `/builds/{id}/publish` |
-| `automation list|show|create|update|validate|run|status|logs|cancel|runs` | automation API |
-| `approval list|show|approve|reject` | approval API |
-| `integration list|oidc-add|oidc-revoke|webhook-add|webhook-rotate|webhook-delete|deliveries|replay` | integration API |
+| `project list\|show\|create` | `/api/v1/projects` |
+| `build trigger\|status\|logs` (`--wait`, `--follow`) | `/projects/{id}/builds`, `/builds/{id}[/logs]` |
+| `publish beta\|stable` (`--wait`; stable needs `--yes`) | `/builds/{id}/publish` |
+| `automation list\|show\|create\|update\|validate\|run\|status\|logs\|cancel\|runs` | automation API |
+| `approval list\|show\|approve\|reject` | approval API |
+| `integration list\|oidc-add\|oidc-revoke\|webhook-add\|webhook-rotate\|webhook-delete\|deliveries\|replay` | integration API |
 | `verify --app A --release P [--trusted-keys FILE]` | public provenance + DSSE verification |
 | `ci <operation>` | automation run API |
 

@@ -333,3 +333,154 @@ async fn stable_promotion_requires_a_successful_beta_publication_of_the_same_bui
     );
     revived.stop().await;
 }
+
+#[tokio::test]
+async fn maximum_approval_window_survives_the_old_run_deadline() {
+    let mut env = Env::new().await;
+    let project = env.project().await;
+    let mut spec = release_pipeline();
+    spec["steps"][4]["with"]["expires_in_hours"] = json!(720);
+    let automation = env.create_automation(project, spec).await;
+    let c = to_approval(&env, project, automation, "long", &Provider::commit('5')).await;
+    env.db()
+        .execute(
+            "UPDATE automation_runs SET created_at=?1 WHERE id=?2",
+            rusqlite::params![
+                (chrono::Utc::now() - chrono::Duration::days(31)).to_rfc3339(),
+                c.run
+            ],
+        )
+        .unwrap();
+    env.automation.tick_once(4).await.unwrap();
+    assert_eq!(
+        env.run_view(project, &c.run).await["status"],
+        "waiting_for_approval"
+    );
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/v1/approvals/{}/approve", c.approval),
+            Some(&env.token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    env.wait_run(project, &c.run, &["completed"]).await;
+    env.stop().await;
+}
+
+#[tokio::test]
+async fn timed_out_runs_cancel_pending_approvals() {
+    let (mut env, project, automation) = setup().await;
+    let c = to_approval(&env, project, automation, "timeout", &Provider::commit('6')).await;
+    env.db()
+        .execute(
+            "UPDATE automation_runs SET created_at=?1 WHERE id=?2",
+            rusqlite::params![
+                (chrono::Utc::now() - chrono::Duration::days(36)).to_rfc3339(),
+                c.run
+            ],
+        )
+        .unwrap();
+    let run = env.wait_run(project, &c.run, &["failed"]).await;
+    assert_eq!(run["error"]["code"], "run_timeout");
+    let status: String = env
+        .db()
+        .query_row(
+            "SELECT status FROM automation_approvals WHERE id=?1",
+            [&c.approval],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    env.stop().await;
+}
+
+#[tokio::test]
+async fn expired_requested_approvals_do_not_consume_capacity() {
+    let (mut env, project, automation) = setup().await;
+    let c = to_approval(
+        &env,
+        project,
+        automation,
+        "capacity",
+        &Provider::commit('7'),
+    )
+    .await;
+    // Stop the supervisors so the expired row remains Requested during admission.
+    env.stop().await;
+    env.db()
+        .execute(
+            "UPDATE automation_approvals SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1",
+            [&c.approval],
+        )
+        .unwrap();
+    let mut store = env.store.clone();
+    store.automation_limits.pending_approvals_per_project = 1;
+    let approval = store
+        .approval_for_step(c.run.parse().unwrap(), "approval".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = store
+        .request_approval(
+            c.run.parse().unwrap(),
+            "another".into(),
+            approval.candidate,
+            72,
+            "test".into(),
+        )
+        .await;
+    assert!(request.is_ok(), "{request:?}");
+}
+
+#[tokio::test]
+async fn step_failure_cancels_approvals_on_skipped_steps() {
+    let (mut env, project, automation) = setup().await;
+    let c = to_approval(
+        &env,
+        project,
+        automation,
+        "dependent",
+        &Provider::commit('8'),
+    )
+    .await;
+    let approval = env
+        .store
+        .approval_for_step(c.run.parse().unwrap(), "approval".into())
+        .await
+        .unwrap()
+        .unwrap();
+    // A separate requested approval attached to an unfinished step must be cancelled too.
+    let dependent = env
+        .store
+        .request_approval(
+            c.run.parse().unwrap(),
+            "publish-stable".into(),
+            approval.candidate,
+            72,
+            "test".into(),
+        )
+        .await
+        .unwrap();
+    let (status, _) = env
+        .call(
+            "POST",
+            &format!("/api/v1/approvals/{}/reject", c.approval),
+            Some(&env.token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    env.wait_run(project, &c.run, &["failed"]).await;
+    let status: String = env
+        .db()
+        .query_row(
+            "SELECT status FROM automation_approvals WHERE id=?1",
+            [dependent.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    env.stop().await;
+}

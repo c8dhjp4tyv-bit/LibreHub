@@ -16,7 +16,7 @@ start automations the project owner defined and wait for them.
 
 | Variable | Meaning |
 | --- | --- |
-| `LIBREHUB_OIDC_AUDIENCE` | Required to enable federation. Tokens must carry exactly this `aud`. |
+| `LIBREHUB_OIDC_AUDIENCE` | Required to enable federation. The token’s `aud` must equal this value or be an array of up to four values containing it. |
 | `LIBREHUB_OIDC_ISSUER` | Default `https://token.actions.githubusercontent.com`. Compared exactly with `iss`. |
 | `LIBREHUB_OIDC_JWKS_URL` | Default `<issuer>/.well-known/jwks`. Must be https. |
 | `LIBREHUB_OIDC_INSECURE_FOR_TESTS=1` | Allows an `http://` JWKS URL for local test issuers only. |
@@ -42,7 +42,7 @@ start automations the project owner defined and wait for them.
 deadlines, 256 KiB cap), cached 10 minutes, refreshed at most once per minute (also when an
 unknown `kid` appears, once, then retried), kept up to 24 h if GitHub is unreachable and
 otherwise fail closed (`503 oidc_keys_unavailable`). A token cannot influence key selection
-beyond naming a `kid` already published by the issuer. The endpoint is limited to 120 requests/minute.
+beyond naming a `kid` already published by the issuer. Successful exchanges are limited per project over a rolling hour by `LIBREHUB_OIDC_MAX_EXCHANGES_PER_HOUR` (default 120).
 
 **Replay.** Every accepted `jti` is stored until it expires; a second exchange of the same token
 is denied (`token_replayed` in the audit trail).

@@ -252,7 +252,15 @@ impl OutboundWorker {
         loop {
             if self.shutdown.is_cancelled() {
                 while let Some(done) = tasks.join_next().await {
-                    done??;
+                    match done {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::error!(%error, "Webhook delivery failed during shutdown")
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "Webhook delivery task failed during shutdown")
+                        }
+                    }
                 }
                 return Ok(());
             }

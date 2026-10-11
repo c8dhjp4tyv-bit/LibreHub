@@ -31,7 +31,8 @@ use tokio::{sync::Notify, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 /// A run that has not finished after this long is failed rather than left pending forever.
-const RUN_DEADLINE: chrono::Duration = chrono::Duration::days(14);
+// Allow the maximum 720-hour approval window plus five days for build/security work.
+const RUN_DEADLINE: chrono::Duration = chrono::Duration::days(35);
 
 /// What a step reports after one poll.
 #[derive(Debug)]
@@ -320,6 +321,16 @@ impl AutomationWorker {
 
     async fn fail_run(&self, ctx: &RunContext, failure: StepFailure) -> anyhow::Result<()> {
         for step in ctx.run.steps.iter().filter(|s| !s.status.is_terminal()) {
+            if let Some(approval) = self
+                .store
+                .approval_for_step(ctx.run.id, step.id.clone())
+                .await?
+                && approval.status == ApprovalStatus::Requested
+            {
+                self.store
+                    .set_approval_status(approval.id, ApprovalStatus::Cancelled, "run_failed")
+                    .await?;
+            }
             self.store
                 .step_patch(
                     ctx.run.id,
@@ -496,6 +507,16 @@ impl AutomationWorker {
             .iter()
             .filter(|s| s.id != step.id && !s.status.is_terminal())
         {
+            if let Some(approval) = self
+                .store
+                .approval_for_step(ctx.run.id, other.id.clone())
+                .await?
+                && approval.status == ApprovalStatus::Requested
+            {
+                self.store
+                    .set_approval_status(approval.id, ApprovalStatus::Cancelled, "upstream_failed")
+                    .await?;
+            }
             self.store
                 .step_patch(
                     ctx.run.id,

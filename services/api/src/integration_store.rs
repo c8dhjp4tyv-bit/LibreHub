@@ -354,6 +354,7 @@ impl Store {
             let current = read_connection(&tx, &id.to_string())?
                 .filter(|c| c.project_id == project && c.revoked_at.is_none())
                 .ok_or(PlatformError("integration_not_found"))?;
+            let mut revoke_tokens = enabled == Some(false);
             let policy_json = match &policy {
                 Some(p) => {
                     let existing: GithubIdentityPolicy =
@@ -362,6 +363,7 @@ impl Store {
                         // Trusting a different repository is a new connection, not an edit.
                         return Err(PlatformError("invalid_request").into());
                     }
+                    revoke_tokens |= existing.allowed_permissions != p.allowed_permissions;
                     serde_json::to_string(p)?
                 }
                 None => current.policy.to_string(),
@@ -375,6 +377,12 @@ impl Store {
                     now_s()
                 ],
             )?;
+            if revoke_tokens {
+                tx.execute(
+                    "UPDATE api_tokens SET record=json_set(record,'$.revoked_at',?2) WHERE json_extract(record,'$.integration_id')=?1 AND json_extract(record,'$.revoked_at') IS NULL",
+                    params![id.to_string(), now_s()],
+                )?;
+            }
             let action = if enabled == Some(false) {
                 "integration.disabled"
             } else {
@@ -494,7 +502,7 @@ impl Store {
             };
             // Single-use token IDs defeat replay of a captured identity token.
             let expires_exchange = DateTime::from_timestamp(claims.expires_at, 0).unwrap_or_else(Utc::now) + chrono::Duration::minutes(5);
-            tx.execute("DELETE FROM oidc_exchanges WHERE expires_at<?1", [(Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()])?;
+            tx.execute("DELETE FROM oidc_exchanges WHERE expires_at<?1 AND exchanged_at<=?2", params![(Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(), hour_ago])?;
             let replay: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM oidc_exchanges WHERE issuer=?1 AND jti=?2)", params![issuer, claims.jti], |r| r.get(0))?;
             if replay {
                 return deny(tx, "token_replayed");

@@ -626,3 +626,119 @@ async fn a_ci_triggered_run_never_reaches_stable_without_an_approved_release() {
     );
     env.stop().await;
 }
+
+#[tokio::test]
+async fn connection_edits_revoke_only_for_disabling_or_permission_changes() {
+    for change in ["disable", "permissions", "unrelated", "enable"] {
+        let (mut env, project) = setup().await;
+        let (_, grant) = oidc_exchange(&env, project, &sign_github_token(github_claims())).await;
+        let ci = grant["token"].as_str().unwrap();
+        let connection: String = env
+            .db()
+            .query_row(
+                "SELECT id FROM integration_connections WHERE project_id=?1",
+                [project.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut policy = serde_json::to_value(github_policy()).unwrap();
+        let patch = match change {
+            "disable" => json!({"enabled": false}),
+            "enable" => json!({"enabled": true}),
+            "permissions" => {
+                policy["allowed_permissions"] = json!(["projects:read"]);
+                json!({"policy": policy})
+            }
+            _ => {
+                policy["token_ttl_seconds"] = json!(300);
+                json!({"policy": policy})
+            }
+        };
+        let (status, body) = env
+            .call(
+                "PATCH",
+                &format!("/api/v1/projects/{project}/integrations/oidc/{connection}"),
+                Some(&env.token),
+                Some(patch),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let status = env
+            .call(
+                "GET",
+                &format!("/api/v1/projects/{project}"),
+                Some(ci),
+                None,
+            )
+            .await
+            .0;
+        assert_eq!(
+            status,
+            if matches!(change, "disable" | "permissions") {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::OK
+            },
+            "{change}"
+        );
+        env.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn replay_cleanup_preserves_the_hourly_exchange_history() {
+    let (mut env, project) = setup().await;
+    let first = github_claims();
+    assert_eq!(
+        oidc_exchange(&env, project, &sign_github_token(first.clone()))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let db = env.db();
+    db.execute(
+        "UPDATE oidc_exchanges SET expires_at='2000-01-01T00:00:00Z'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        oidc_exchange(&env, project, &sign_github_token(github_claims()))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM oidc_exchanges", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 2,
+        "expired identities must still count toward the hourly limit"
+    );
+    // The retained row also continues to prevent replay.
+    assert_eq!(
+        oidc_exchange(&env, project, &sign_github_token(first.clone()))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    db.execute(
+        "UPDATE oidc_exchanges SET exchanged_at='2000-01-01T00:00:00Z' WHERE jti=?1",
+        [first["jti"].as_str().unwrap()],
+    )
+    .unwrap();
+    assert_eq!(
+        oidc_exchange(&env, project, &sign_github_token(github_claims()))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let retained: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM oidc_exchanges WHERE jti=?1)",
+            [first["jti"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!retained, "cleanup resumes after both windows elapse");
+    env.stop().await;
+}

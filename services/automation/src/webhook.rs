@@ -149,7 +149,7 @@ fn public_v4(v: Ipv4Addr, policy: DestinationPolicy) -> bool {
         || a >= 224
         || (a == 169 && b == 254)
         || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && (b == 168 || b == 0 || (b == 88 && c == 99)))
+        || (a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)) || (b == 88 && c == 99)))
         || (a == 100 && (64..=127).contains(&b))
         || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
         || (a == 203 && b == 0 && c == 113))
@@ -342,6 +342,16 @@ mod tests {
             b"{\"a\":1}",
             NOW
         ));
+    }
+    #[test]
+    fn ipv4_special_ranges_do_not_block_public_192_0_addresses() {
+        let policy = DestinationPolicy::default();
+        for ip in ["192.0.0.1", "192.0.2.1", "192.168.1.1", "192.88.99.1"] {
+            assert!(!is_public_ip(ip.parse().unwrap(), policy), "{ip}");
+        }
+        for ip in ["192.0.1.1", "192.0.3.1", "192.0.255.1"] {
+            assert!(is_public_ip(ip.parse().unwrap(), policy), "{ip}");
+        }
     }
     #[test]
     fn destinations_must_be_public_https() {

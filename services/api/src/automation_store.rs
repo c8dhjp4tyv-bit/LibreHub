@@ -1381,8 +1381,8 @@ impl Store {
             }
             let run_row = read_run(&tx, &run.to_string())?.ok_or(PlatformError("automation_run_not_found"))?;
             let pending: i64 = tx.query_row(
-                "SELECT count(*) FROM automation_approvals WHERE project_id=?1 AND status='requested'",
-                [run_row.project_id.to_string()],
+                "SELECT count(*) FROM automation_approvals WHERE project_id=?1 AND status='requested' AND expires_at>?2",
+                params![run_row.project_id.to_string(), now_s()],
                 |r| r.get(0),
             )?;
             if pending >= limits.pending_approvals_per_project as i64 {

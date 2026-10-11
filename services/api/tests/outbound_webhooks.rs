@@ -758,3 +758,68 @@ async fn origin_filters_and_chain_depth_stop_notification_loops() {
     );
     env.shutdown.cancel();
 }
+
+#[tokio::test]
+async fn shutdown_drains_other_deliveries_after_a_task_panics() {
+    use librehub_api::outbound_worker::Transport;
+    use librehub_automation::webhook::Destination;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Barrier;
+    use tokio_util::sync::CancellationToken;
+
+    struct DrainTransport {
+        started: Barrier,
+        shutdown: CancellationToken,
+        calls: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl Transport for DrainTransport {
+        async fn post(
+            &self,
+            _: &Destination,
+            _: &[std::net::SocketAddr],
+            _: Vec<(String, String)>,
+            _: Vec<u8>,
+        ) -> TransportResult {
+            let index = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.started.wait().await;
+            self.shutdown.cancelled().await;
+            if index == 0 {
+                panic!("synthetic delivery panic");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            TransportResult::Response {
+                status: 204,
+                retry_after: None,
+            }
+        }
+    }
+    let (env, project, _, _) = setup().await;
+    let (status, body) = env.call("POST", &format!("/api/v1/projects/{project}/integrations/webhooks"), Some(&env.token), Some(json!({"url":format!("https://{HOST}/second"),"event_types":["automation.started"]}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    emit_event(&env, project).await;
+    let transport = Arc::new(DrainTransport {
+        started: Barrier::new(3),
+        shutdown: env.shutdown.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let mut worker = env.outbound.clone();
+    worker.transport = transport.clone();
+    let task = tokio::spawn(worker.run());
+    tokio::time::timeout(std::time::Duration::from_secs(5), transport.started.wait())
+        .await
+        .unwrap();
+    env.shutdown.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries(&env)
+            .iter()
+            .filter(|(_, status, _)| status == "delivered")
+            .count(),
+        1
+    );
+}

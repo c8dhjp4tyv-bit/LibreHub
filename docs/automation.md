@@ -137,6 +137,8 @@ run once. The cursor advance and run insert share a transaction and the run key 
 occurrence, so restarts and concurrent callers cannot duplicate it. `LIBREHUB_AUTOMATION_SCHEDULER=disabled`
 switches evaluation off for operators; `schedules_enabled: false` does so per automation.
 
+Runs have a 35-day deadline, allowing the maximum 720-hour approval window plus five days for build and security work.
+
 ## API
 
 All routes need a bearer token. Lists accept `limit` (1–100) and `offset`.
@@ -149,7 +151,7 @@ All routes need a bearer token. Lists accept `limit` (1–100) and `offset`.
 | GET | `…/automations/{automation}/runs`, `/api/v1/projects/{id}/runs` | read |
 | GET | `…/automations/runs/{run}`, `…/runs/{run}/events` | read |
 | POST | `…/automations/runs/{run}/cancel` | `automations:run` |
-| GET/POST | `/api/v1/approvals[/{id}[/approve|/reject]]`, `/api/v1/projects/{id}/approvals` | read / `releases:approve` |
+| GET/POST | `/api/v1/approvals[/{id}[/approve\|/reject]]`, `/api/v1/projects/{id}/approvals` | read / `releases:approve` |
 | GET | `/api/v1/whoami` | any valid credential |
 
 Run request body: `{ref?, commit?, fresh_build?, idempotency_key?, chain_depth?, correlation_id?}`.

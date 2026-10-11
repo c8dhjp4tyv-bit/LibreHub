@@ -128,11 +128,6 @@ async fn exchange(
             "oidc_keys_unavailable",
             "The identity provider's signing keys are unavailable",
         ),
-        VerifyError::RateLimited => ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "oidc_rate_limited",
-            "Too many exchange attempts",
-        ),
     })?;
     tracing::info!(project_id=%request.project_id, repository_id=%claims.repository_id, run_id=%claims.run_id, "Verified GitHub identity presented for exchange");
     let granted = s

@@ -1216,14 +1216,16 @@ async fn ci(ctx: &Context, args: CiArgs) -> Result<Output, CliError> {
         {
             body.insert("ref".into(), json!(r.trim_start_matches("refs/heads/")));
         }
-        body.insert(
-            "idempotency_key".into(),
-            json!(format!(
-                "gha-{}-{}",
-                std::env::var("GITHUB_RUN_ID").unwrap_or_else(|_| "local".into()),
-                std::env::var("GITHUB_RUN_ATTEMPT").unwrap_or_else(|_| "1".into())
-            )),
-        );
+        if let Ok(run_id) = std::env::var("GITHUB_RUN_ID") {
+            body.insert(
+                "idempotency_key".into(),
+                json!(format!(
+                    "gha-{}-{}",
+                    run_id,
+                    std::env::var("GITHUB_RUN_ATTEMPT").unwrap_or_else(|_| "1".into())
+                )),
+            );
+        }
     }
     let (_, started) = ctx
         .client

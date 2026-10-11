@@ -687,3 +687,48 @@ fn workflows_are_validated_locally_without_a_server() {
     let invalid = run.exec(&["automation", "validate", "--file", bad.to_str().unwrap()]);
     assert_eq!(code(&invalid), 2);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ci_idempotency_is_only_set_for_github_runs() {
+    for (run_id, attempt, expected) in [
+        (None, None, None),
+        (Some("123"), None, Some("gha-123-1")),
+        (Some("123"), Some("2"), Some("gha-123-2")),
+    ] {
+        let (url, state) = serve().await;
+        let mut run = Run::new(&url).env("LIBREHUB_TOKEN", TOKEN);
+        if let Some(id) = run_id {
+            run = run.env("GITHUB_RUN_ID", id);
+        }
+        if let Some(a) = attempt {
+            run = run.env("GITHUB_RUN_ATTEMPT", a);
+        }
+        let output = tokio::task::spawn_blocking(move || {
+            run.exec(&[
+                "ci",
+                "wait-for-build",
+                "--project",
+                PROJECT,
+                "--automation",
+                "Release Pipeline",
+            ])
+        })
+        .await
+        .unwrap();
+        assert_eq!(code(&output), 0, "{}", err(&output));
+        let state = state.lock().unwrap();
+        let body = &state
+            .log
+            .iter()
+            .find(|(_, path, ..)| path == "run")
+            .unwrap()
+            .3;
+        assert_eq!(
+            body.get("idempotency_key").and_then(Value::as_str),
+            expected
+        );
+        if expected.is_none() {
+            assert!(body.get("idempotency_key").is_none());
+        }
+    }
+}
