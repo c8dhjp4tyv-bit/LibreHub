@@ -32,7 +32,11 @@ async fn pump(env: &Env) -> usize {
             .await
             .unwrap();
     }
-    let due = env.store.claim_deliveries(16).await.unwrap();
+    let due = env
+        .store
+        .claim_deliveries(16, std::time::Duration::from_secs(120))
+        .await
+        .unwrap();
     let n = due.len();
     for d in due {
         env.outbound.deliver(d).await.unwrap();
@@ -677,10 +681,14 @@ async fn duplicate_fan_out_and_restart_do_not_duplicate_or_lose_deliveries() {
     }
     assert_eq!(deliveries(&env).len(), 1, "(subscription, event) is unique");
     // A crash mid-delivery leaves the row `delivering`; recovery makes it due again (at-least-once).
-    let due = env.store.claim_deliveries(4).await.unwrap();
+    let due = env
+        .store
+        .claim_deliveries(4, std::time::Duration::from_secs(120))
+        .await
+        .unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(deliveries(&env)[0].1, "delivering");
-    assert_eq!(env.store.recover_deliveries().await.unwrap(), 1);
+    assert_eq!(env.store.recover_deliveries(8).await.unwrap(), 1);
     assert_eq!(deliveries(&env)[0].1, "retry_wait");
     assert_eq!(pump(&env).await, 1);
     assert_eq!(deliveries(&env)[0].1, "delivered");

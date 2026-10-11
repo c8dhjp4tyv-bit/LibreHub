@@ -101,6 +101,22 @@ impl Store {
         db.execute_batch(include_str!(
             "../migrations/007_automation_integrations.sql"
         ))?;
+        // M8: a claimed webhook delivery records its lease, so an attempt abandoned inside a
+        // running process is recovered when the lease expires. Existing rows are additive.
+        let has_delivery_lease = db
+            .prepare("PRAGMA table_info(integration_deliveries)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "lease_expires_at");
+        if !has_delivery_lease {
+            db.execute_batch(
+                "ALTER TABLE integration_deliveries ADD COLUMN lease_expires_at TEXT;",
+            )?;
+        }
+        db.execute_batch(
+            "CREATE INDEX IF NOT EXISTS integration_deliveries_lease ON integration_deliveries(lease_expires_at) WHERE status='delivering';",
+        )?;
         // Existing M3 databases predate the explicit automatic-publication association.
         let has_auto_publish_id = db
             .prepare("PRAGMA table_info(source_events)")?
@@ -125,6 +141,11 @@ impl Store {
             attestation_repository: None,
             automation_limits: Default::default(),
         })
+    }
+    /// How long a statement waits for a lock held by another connection (operator tools, backups)
+    /// before it fails with `SQLITE_BUSY`. Failures are retried by the workers, never fatal.
+    pub async fn set_busy_timeout(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.run(move |db| Ok(db.busy_timeout(timeout)?)).await
     }
     pub(crate) async fn run<T, F>(&self, f: F) -> anyhow::Result<T>
     where
