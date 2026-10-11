@@ -114,20 +114,30 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
     env.wait_run(project, &later_id, &["completed"]).await;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let completed: i64 = env.db().query_row(
-                "SELECT count(*) FROM integration_deliveries WHERE status='delivered'",
-                [], |r| r.get(0)
-            ).unwrap();
-            if completed == 2 { break; }
+            let completed: i64 = env
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM integration_deliveries WHERE status='delivered'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if completed == 2 {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
     .expect("later webhook must be delivered after quarantine");
-    let consumer_count: i64 = env.db().query_row(
-        "SELECT count(DISTINCT consumer) FROM outbox_quarantine",
-        [], |r| r.get(0),
-    ).unwrap();
+    let consumer_count: i64 = env
+        .db()
+        .query_row(
+            "SELECT count(DISTINCT consumer) FROM outbox_quarantine",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(consumer_count, 2);
     assert!(
         !env.shutdown.is_cancelled(),
@@ -155,6 +165,9 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(remaining, 1, "the original event must remain for investigation");
+    assert_eq!(
+        remaining, 1,
+        "the original event must remain for investigation"
+    );
     env.stop().await;
 }
