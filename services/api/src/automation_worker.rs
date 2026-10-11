@@ -284,7 +284,12 @@ impl AutomationWorker {
             if fatal {
                 return Ok(());
             }
-            if finished && fresh.spec.step(&step_id).is_some_and(|s| s.uses == StepKind::Build) {
+            if finished
+                && fresh
+                    .spec
+                    .step(&step_id)
+                    .is_some_and(|s| s.uses == StepKind::Build)
+            {
                 crate::fault::barrier(&self.store.data_dir, "after_build_complete").await;
             }
             if finished {

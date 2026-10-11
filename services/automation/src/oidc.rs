@@ -188,7 +188,7 @@ pub fn verify_github_token(
         return Err(OidcError::UnsupportedAlgorithm);
     }
     // Never let a token name its own key material or processing extensions.
-    if ["jku", "jwk", "x5u", "x5c", "x5t", "crit", "zip", "cty"]
+    if ["jku", "jwk", "x5u", "x5c", "crit", "zip", "cty"]
         .iter()
         .any(|forbidden| header.contains_key(*forbidden))
     {
@@ -723,6 +723,17 @@ mod tests {
             verify(&"x".repeat(MAX_TOKEN_BYTES + 1)),
             Err(OidcError::Malformed)
         );
+    }
+    #[test]
+    fn github_style_headers_with_a_thumbprint_hint_are_accepted() {
+        // GitHub's real tokens carry `x5t`; only `kid` ever selects a key.
+        let pair = key_pair(SIGNING_KEY);
+        let t = sign(
+            &pair,
+            json!({"alg":"RS256","typ":"JWT","kid":"k1","x5t":"abc123"}),
+            claims(),
+        );
+        assert!(verify(&t).is_ok());
     }
     #[test]
     fn kid_substitution_cannot_pick_an_attacker_key() {

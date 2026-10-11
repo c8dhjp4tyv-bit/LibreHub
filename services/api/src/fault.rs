@@ -6,8 +6,13 @@ use std::path::Path;
 pub async fn barrier(data_dir: &Path, stage: &str) {
     #[cfg(debug_assertions)]
     {
-        if std::env::var("LIBREHUB_TEST_AUTOMATION_FAULT_STAGE").ok().as_deref() == Some(stage) {
-            let _ = tokio::fs::write(data_dir.join(format!("automation-fault-{stage}")), b"ready").await;
+        if std::env::var("LIBREHUB_TEST_AUTOMATION_FAULT_STAGE")
+            .ok()
+            .as_deref()
+            == Some(stage)
+        {
+            let _ = tokio::fs::write(data_dir.join(format!("automation-fault-{stage}")), b"ready")
+                .await;
             std::future::pending::<()>().await;
         }
     }
