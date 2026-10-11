@@ -1,0 +1,21 @@
+[package]
+name = "librehub-automation"
+version.workspace = true
+edition.workspace = true
+[features]
+testing = []
+[dependencies]
+librehub-common.workspace = true
+base64 = "0.22"
+chrono.workspace = true
+hmac = "0.12"
+ring = "0.17"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2 = "0.10"
+subtle = "2"
+thiserror.workspace = true
+tokio.workspace = true
+url = "2"
+uuid.workspace = true

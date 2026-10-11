@@ -72,6 +72,10 @@ pub struct SourceAdmission {
     pub source_ref: String,
     pub commit: Option<String>,
     pub webhook: Option<WebhookAdmission>,
+    /// M7 canonical build intent: at most one source event per `(project, intent_key)`.
+    pub intent_key: Option<String>,
+    /// Automation-owned builds are published only by the automation that requested them.
+    pub skip_auto_publish: bool,
 }
 #[derive(Clone)]
 pub struct WebhookAdmission {
@@ -220,25 +224,13 @@ impl Store {
         input: SourceAdmission,
         ignored: bool,
     ) -> anyhow::Result<Admission> {
-        self.run(move|db|{let tx=db.transaction()?;let policy=project(&tx,input.project_id)?.ok_or(PlatformError("project_not_found"))?;if input.owner.is_some_and(|o|o!=policy.owner_developer_id){return Err(PlatformError("project_not_found").into())}
-        if let Some(hook)=&input.webhook {
-            let cipher:Vec<u8>=tx.query_row("SELECT webhook_secret FROM projects WHERE id=?1",[policy.id.to_string()],|r|r.get(0))?;if cipher!=hook.expected_cipher{return Err(PlatformError("webhook_signature_invalid").into())}
-if policy.policy_version!=hook.expected_policy{return Err(PlatformError("project_update_conflict").into())}
-            let duplicate:Option<Option<String>>=tx.query_row("SELECT source_event_id FROM webhook_deliveries WHERE provider='github' AND project_id=?1 AND delivery_id=?2",params![policy.id.to_string(),hook.delivery_id],|r|r.get(0)).optional()?;
-            if let Some(id)=duplicate {return Ok(Admission::Duplicate(id.map(|id|id.parse()).transpose()?))}
-            let count:i64=tx.query_row("SELECT count(*) FROM webhook_deliveries WHERE project_id=?1",[policy.id.to_string()],|r|r.get(0))?;if count>=10000{return Err(PlatformError("webhook_delivery_limit").into())}
-        }
-        let ignored=ignored||policy.status!=ProjectStatus::Active;
-        if ignored {
-            if let Some(hook)=input.webhook {tx.execute("INSERT INTO webhook_deliveries(provider,project_id,delivery_id,event_type,received_at,processed_at,result) VALUES('github',?1,?2,?3,?4,?4,'ignored')",params![policy.id.to_string(),hook.delivery_id,hook.event_type,Utc::now().to_rfc3339()])?;}
-            if input.owner.is_some() {return Err(PlatformError("project_disabled").into())}tx.commit()?;return Ok(Admission::Ignored)
-        }
-        let queued:i64=tx.query_row("SELECT count(*) FROM source_events WHERE status IN ('queued','resolving','fetching','handoff')",[],|r|r.get(0))?;if queued>=MAX_SOURCE_EVENTS as i64{return Err(PlatformError("source_queue_full").into())}
-        let total:i64=tx.query_row("SELECT count(*) FROM source_events WHERE project_id=?1",[policy.id.to_string()],|r|r.get(0))?;if total>=10000{return Err(PlatformError("source_history_limit").into())}
-        let now=Utc::now();let event=SourceEvent{id:SourceEventId::new(),project_id:policy.id,build_id:BuildId::new(),trigger:input.trigger,delivery_id:input.webhook.as_ref().map(|h|h.delivery_id.clone()),source_ref:input.source_ref.clone(),revision:input.commit.map(|commit|SourceRevision{repository:policy.repository.url.clone(),commit,source_ref:input.source_ref,resolved_at:now}),policy,status:SourceEventStatus::Queued,attempts:0,received_at:now,processed_at:None,error:None};
-        tx.execute("INSERT INTO source_events(id,project_id,build_id,status,record) VALUES(?1,?2,?3,'queued',?4)",params![event.id.to_string(),event.project_id.to_string(),event.build_id.to_string(),serde_json::to_string(&event)?])?;
-        if let Some(hook)=input.webhook {tx.execute("INSERT INTO webhook_deliveries(provider,project_id,delivery_id,event_type,received_at,result,source_event_id) VALUES('github',?1,?2,?3,?4,'queued',?5)",params![event.project_id.to_string(),hook.delivery_id,hook.event_type,now.to_rfc3339(),event.id.to_string()])?;}
-        audit(&tx,event.policy.owner_developer_id,"build.triggered",Some(event.project_id),&event.build_id.to_string(),"queued")?;tx.commit()?;Ok(Admission::Created(Box::new(event)))}).await
+        self.run(move |db| {
+            let tx = db.transaction()?;
+            let result = admit_source_in(&tx, input, ignored)?;
+            tx.commit()?;
+            Ok(result)
+        })
+        .await
     }
     pub async fn pending_source(&self) -> anyhow::Result<Option<SourceEvent>> {
         self.run(|db|{let raw:Option<String>=db.query_row("SELECT record FROM source_events WHERE status IN ('queued','resolving','fetching','handoff') ORDER BY rowid LIMIT 1",[],|r|r.get(0)).optional()?;raw.map(|r|serde_json::from_str(&r).map_err(Into::into)).transpose()}).await
@@ -374,5 +366,111 @@ pub(crate) fn auto_publish_valid(db: &Connection, publication: PublishId) -> any
     match raw {
         Some(raw) => auto_policy_valid(db, &serde_json::from_str(&raw)?),
         None => Ok(true),
+    }
+}
+
+pub(crate) fn admit_source_in(
+    tx: &rusqlite::Transaction,
+    input: SourceAdmission,
+    ignored: bool,
+) -> anyhow::Result<Admission> {
+    {
+        let policy = project(tx, input.project_id)?.ok_or(PlatformError("project_not_found"))?;
+        if input.owner.is_some_and(|o| o != policy.owner_developer_id) {
+            return Err(PlatformError("project_not_found").into());
+        }
+        if let Some(hook) = &input.webhook {
+            let cipher: Vec<u8> = tx.query_row(
+                "SELECT webhook_secret FROM projects WHERE id=?1",
+                [policy.id.to_string()],
+                |r| r.get(0),
+            )?;
+            if cipher != hook.expected_cipher {
+                return Err(PlatformError("webhook_signature_invalid").into());
+            }
+            if policy.policy_version != hook.expected_policy {
+                return Err(PlatformError("project_update_conflict").into());
+            }
+            let duplicate:Option<Option<String>>=tx.query_row("SELECT source_event_id FROM webhook_deliveries WHERE provider='github' AND project_id=?1 AND delivery_id=?2",params![policy.id.to_string(),hook.delivery_id],|r|r.get(0)).optional()?;
+            if let Some(id) = duplicate {
+                return Ok(Admission::Duplicate(id.map(|id| id.parse()).transpose()?));
+            }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM webhook_deliveries WHERE project_id=?1",
+                [policy.id.to_string()],
+                |r| r.get(0),
+            )?;
+            if count >= 10000 {
+                return Err(PlatformError("webhook_delivery_limit").into());
+            }
+        }
+        let ignored = ignored || policy.status != ProjectStatus::Active;
+        if ignored {
+            if let Some(hook) = input.webhook {
+                tx.execute("INSERT INTO webhook_deliveries(provider,project_id,delivery_id,event_type,received_at,processed_at,result) VALUES('github',?1,?2,?3,?4,?4,'ignored')",params![policy.id.to_string(),hook.delivery_id,hook.event_type,Utc::now().to_rfc3339()])?;
+            }
+            if input.owner.is_some() {
+                return Err(PlatformError("project_disabled").into());
+            }
+            return Ok(Admission::Ignored);
+        }
+        if let Some(key) = &input.intent_key {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM source_events WHERE project_id=?1 AND intent_key=?2",
+                    params![policy.id.to_string(), key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                return Ok(Admission::Duplicate(Some(id.parse()?)));
+            }
+        }
+        let queued:i64=tx.query_row("SELECT count(*) FROM source_events WHERE status IN ('queued','resolving','fetching','handoff')",[],|r|r.get(0))?;
+        if queued >= MAX_SOURCE_EVENTS as i64 {
+            return Err(PlatformError("source_queue_full").into());
+        }
+        let total: i64 = tx.query_row(
+            "SELECT count(*) FROM source_events WHERE project_id=?1",
+            [policy.id.to_string()],
+            |r| r.get(0),
+        )?;
+        if total >= 10000 {
+            return Err(PlatformError("source_history_limit").into());
+        }
+        let now = Utc::now();
+        let event = SourceEvent {
+            id: SourceEventId::new(),
+            project_id: policy.id,
+            build_id: BuildId::new(),
+            trigger: input.trigger,
+            delivery_id: input.webhook.as_ref().map(|h| h.delivery_id.clone()),
+            source_ref: input.source_ref.clone(),
+            revision: input.commit.map(|commit| SourceRevision {
+                repository: policy.repository.url.clone(),
+                commit,
+                source_ref: input.source_ref,
+                resolved_at: now,
+            }),
+            policy,
+            status: SourceEventStatus::Queued,
+            attempts: 0,
+            received_at: now,
+            processed_at: None,
+            error: None,
+        };
+        tx.execute("INSERT INTO source_events(id,project_id,build_id,status,record,intent_key,auto_publish_state) VALUES(?1,?2,?3,'queued',?4,?5,?6)",params![event.id.to_string(),event.project_id.to_string(),event.build_id.to_string(),serde_json::to_string(&event)?,input.intent_key,if input.skip_auto_publish{"skipped"}else{"pending"}])?;
+        if let Some(hook) = input.webhook {
+            tx.execute("INSERT INTO webhook_deliveries(provider,project_id,delivery_id,event_type,received_at,result,source_event_id) VALUES('github',?1,?2,?3,?4,'queued',?5)",params![event.project_id.to_string(),hook.delivery_id,hook.event_type,now.to_rfc3339(),event.id.to_string()])?;
+        }
+        audit(
+            tx,
+            event.policy.owner_developer_id,
+            "build.triggered",
+            Some(event.project_id),
+            &event.build_id.to_string(),
+            "queued",
+        )?;
+        Ok(Admission::Created(Box::new(event)))
     }
 }

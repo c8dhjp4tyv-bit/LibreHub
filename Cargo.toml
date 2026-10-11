@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/common", "services/validator", "services/builder", "services/api", "services/publisher", "services/source", "services/catalog", "services/security", "services/supply-chain"]
+members = ["crates/common", "services/validator", "services/builder", "services/api", "services/publisher", "services/source", "services/catalog", "services/security", "services/supply-chain", "services/automation"]
 resolver = "2"
 
 [workspace.package]
@@ -8,6 +8,7 @@ edition = "2024"
 
 [workspace.dependencies]
 librehub-supply-chain = { path = "services/supply-chain" }
+librehub-automation = { path = "services/automation" }
 librehub-common = { path = "crates/common" }
 librehub-validator = { path = "services/validator" }
 librehub-builder = { path = "services/builder" }

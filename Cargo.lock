@@ -893,6 +893,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "http-body-util",
+ "librehub-automation",
  "librehub-builder",
  "librehub-catalog",
  "librehub-common",
@@ -901,6 +902,7 @@ dependencies = [
  "librehub-source",
  "librehub-supply-chain",
  "librehub-validator",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -914,6 +916,26 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "librehub-automation"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hmac",
+ "librehub-common",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
  "url",
  "uuid",
 ]

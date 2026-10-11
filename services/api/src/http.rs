@@ -344,6 +344,8 @@ async fn supply_policy(
     Ok(Json(decision))
 }
 async fn ready(
+    automation: Option<Extension<crate::automation_worker::AutomationWorker>>,
+    outbound: Option<Extension<crate::outbound_worker::OutboundWorker>>,
     catalog: Option<Extension<crate::catalog_worker::CatalogWorker>>,
     platform: Option<Extension<Arc<crate::platform::Platform>>>,
     State(state): State<Arc<ApiState>>,
@@ -376,6 +378,25 @@ async fn ready(
     } else {
         true
     };
+    // M7 workers are local components. Receiver or GitHub outages only degrade their own
+    // integration; they never make the M1–M6 publishing path unready.
+    let (automation_ok, scheduler) = match &automation {
+        Some(Extension(a)) => (
+            a.ready(),
+            if !a.scheduler_enabled {
+                "disabled"
+            } else if a
+                .scheduler_running
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                "ok"
+            } else {
+                "unavailable"
+            },
+        ),
+        None => (true, "ok"),
+    };
+    let outbound_ok = outbound.as_ref().is_none_or(|Extension(o)| o.ready());
     let authentication = database;
     let attestor = state
         .supervisor
@@ -391,6 +412,9 @@ async fn ready(
         && manager
         && repository
         && publisher
+        && automation_ok
+        && scheduler != "unavailable"
+        && outbound_ok
         && !state.supervisor.shutdown.is_cancelled();
     let component = |ok| if ok { "ok" } else { "unavailable" };
     (
@@ -400,7 +424,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher)}}),
+            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher),"automation_worker":component(automation_ok),"scheduler":scheduler,"outbound_delivery":component(outbound_ok)}}),
         ),
     )
 }

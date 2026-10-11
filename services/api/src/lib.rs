@@ -21,3 +21,11 @@ pub mod security_worker;
 
 pub mod supply_chain;
 pub mod supply_chain_http;
+
+pub mod automation_http;
+pub mod automation_store;
+pub mod automation_worker;
+pub mod integration_http;
+pub mod integration_store;
+pub mod oidc_verifier;
+pub mod outbound_worker;

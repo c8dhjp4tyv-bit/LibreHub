@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, str::FromStr};
 use uuid::Uuid;
 
+mod automation;
+pub use automation::*;
 mod developer;
 pub use developer::*;
 mod publication;

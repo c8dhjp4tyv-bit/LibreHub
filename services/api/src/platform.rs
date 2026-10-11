@@ -116,6 +116,14 @@ async fn owned(
     auth: &AuthenticatedDeveloper,
     id: ProjectId,
 ) -> Result<Project, ApiError> {
+    // Federated CI credentials are bound to exactly one project.
+    if !auth.can_access_project(id) {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "project_not_found",
+            "Project does not exist",
+        ));
+    }
     platform
         .worker
         .supervisor
@@ -436,6 +444,8 @@ async fn trigger(
                 source_ref,
                 commit: None,
                 webhook: None,
+                intent_key: None,
+                skip_auto_publish: false,
             },
             false,
         )
@@ -589,7 +599,7 @@ async fn create_token(
     if request.name.trim().is_empty()
         || request.name.len() > 120
         || request.scopes.is_empty()
-        || request.scopes.len() > 10
+        || request.scopes.len() > 24
     {
         return Err(invalid());
     }
@@ -641,6 +651,35 @@ async fn revoke_token(
         ));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+/// `(is_tag, ref name, immutable commit)` for deliveries automations may react to.
+fn automation_event(
+    kind: &str,
+    payload: &Value,
+    source_ref: &str,
+) -> Option<(bool, String, Option<String>)> {
+    match kind {
+        "push" => {
+            if payload["deleted"].as_bool().unwrap_or(false) {
+                return None;
+            }
+            let sha = payload["after"]
+                .as_str()
+                .filter(|s| librehub_source::valid_commit(s))?
+                .to_owned();
+            if let Some(branch) = source_ref.strip_prefix("refs/heads/") {
+                Some((false, branch.to_owned(), Some(sha)))
+            } else {
+                source_ref
+                    .strip_prefix("refs/tags/")
+                    .map(|tag| (true, tag.to_owned(), Some(sha)))
+            }
+        }
+        "create" if payload["ref_type"] == "tag" => {
+            Some((true, payload["ref"].as_str()?.to_owned(), None))
+        }
+        _ => None,
+    }
 }
 pub fn verify_signature(secret: &Secret, body: &[u8], signature: Option<&str>) -> bool {
     let Some(signature) = signature.and_then(|s| s.strip_prefix("sha256=")) else {
@@ -762,6 +801,10 @@ async fn webhook(
     if !librehub_source::safe_ref(&source_ref) {
         return Err(invalid());
     }
+    // M7: the same verified delivery may trigger durable automations. They are idempotent by
+    // delivery ID and converge on the build M3 admits for this commit instead of duplicating it.
+    let automation_event = automation_event(kind, &payload, &source_ref);
+    let automation_ref = source_ref.clone();
     let admission = SourceAdmission {
         project_id,
         owner: None,
@@ -774,6 +817,8 @@ async fn webhook(
             expected_cipher: cipher,
             expected_policy: project.policy_version,
         }),
+        intent_key: None,
+        skip_auto_publish: false,
     };
     let result = p
         .worker
@@ -783,23 +828,47 @@ async fn webhook(
         .await
         .map_err(failure)?;
     tracing::info!(%project_id,webhook_delivery_id=%delivery,"Verified webhook delivery admitted");
+    let mut automation_runs = Vec::new();
+    if let Some((tag, name, automation_commit)) = automation_event {
+        let admitted = p
+            .worker
+            .supervisor
+            .store
+            .admit_webhook_runs(
+                project_id,
+                delivery.clone(),
+                tag,
+                name,
+                automation_ref,
+                automation_commit,
+            )
+            .await
+            .map_err(failure)?;
+        automation_runs = admitted.iter().map(|a| a.run().id).collect();
+    }
     Ok(match result {
         Admission::Created(event) => {
             p.worker.wake.notify_one();
             (
                 StatusCode::ACCEPTED,
                 Json(
-                    json!({"status":"queued","source_event_id":event.id,"build_id":event.build_id}),
+                    json!({"status":"queued","source_event_id":event.id,"build_id":event.build_id,"automation_runs":automation_runs}),
                 ),
             )
                 .into_response()
         }
         Admission::Duplicate(event) => (
             StatusCode::OK,
-            Json(json!({"code":"webhook_duplicate","status":"duplicate","source_event_id":event})),
+            Json(
+                json!({"code":"webhook_duplicate","status":"duplicate","source_event_id":event,"automation_runs":automation_runs}),
+            ),
         )
             .into_response(),
-        Admission::Ignored => (StatusCode::OK, Json(json!({"status":"ignored"}))).into_response(),
+        Admission::Ignored => (
+            StatusCode::OK,
+            Json(json!({"status":"ignored","automation_runs":automation_runs})),
+        )
+            .into_response(),
     })
 }
 
