@@ -698,7 +698,7 @@ impl Store {
 async fn fault_barrier(store: &Store, stage: &str) -> Result<()> {
     #[cfg(debug_assertions)]
     {
-        if std::env::var("LIBREHUB_TEST_ATTESTATION_FAULT_STAGE")
+        if librehub_common::test_hooks::test_env("LIBREHUB_TEST_ATTESTATION_FAULT_STAGE")
             .ok()
             .as_deref()
             == Some(stage)

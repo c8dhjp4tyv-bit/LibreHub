@@ -245,9 +245,10 @@ impl SourceWorker {
         // Deterministic SIGKILL barriers for the disposable TLS fixture only.
         // Release builds compile this out; no HTTP input can enable fault injection.
         #[cfg(debug_assertions)]
-        if std::env::var("LIBREHUB_TEST_SOURCE_REPOSITORY").as_deref()
+        if librehub_common::test_hooks::test_env("LIBREHUB_TEST_SOURCE_REPOSITORY").as_deref()
             == Ok("https://git.librehub.test/fixture.git")
-            && std::env::var("LIBREHUB_TEST_SOURCE_FAULT_STAGE").as_deref() == Ok(stage)
+            && librehub_common::test_hooks::test_env("LIBREHUB_TEST_SOURCE_FAULT_STAGE").as_deref()
+                == Ok(stage)
         {
             let path = self
                 .supervisor
@@ -316,19 +317,21 @@ impl SourceWorker {
 }
 /// Public HTTPS only; the TLS fixture exception is opt-in operator configuration.
 pub fn git_from_env() -> anyhow::Result<GitSource> {
-    let Some(repository) = std::env::var("LIBREHUB_TEST_SOURCE_REPOSITORY").ok() else {
+    let Some(repository) =
+        librehub_common::test_hooks::test_env("LIBREHUB_TEST_SOURCE_REPOSITORY").ok()
+    else {
         return Ok(GitSource::default());
     };
     anyhow::ensure!(
         repository == "https://git.librehub.test/fixture.git",
         "Invalid test repository identity"
     );
-    let ca_file = std::env::var("LIBREHUB_TEST_SOURCE_CA_FILE")?;
+    let ca_file = librehub_common::test_hooks::test_env("LIBREHUB_TEST_SOURCE_CA_FILE")?;
     Ok(GitSource {
         test_origin: Some(librehub_source::TestOrigin {
             repository,
             address: std::net::Ipv4Addr::LOCALHOST,
-            port: std::env::var("LIBREHUB_TEST_SOURCE_PORT")?.parse()?,
+            port: librehub_common::test_hooks::test_env("LIBREHUB_TEST_SOURCE_PORT")?.parse()?,
             ca_file: ca_file.into(),
         }),
     })

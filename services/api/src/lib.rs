@@ -1,5 +1,8 @@
+pub mod backup;
 pub mod config;
 pub mod http;
+pub mod ops;
+pub mod production;
 mod publication_store;
 pub mod publishing;
 pub mod store;

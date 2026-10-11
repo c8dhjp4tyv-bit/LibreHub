@@ -36,10 +36,11 @@ impl FixtureVulnerabilityProvider {
     }
 
     pub fn from_env() -> Option<Self> {
-        if std::env::var("LIBREHUB_TEST_VULNERABILITY_OUTAGE").is_ok() {
+        if librehub_common::test_hooks::test_env("LIBREHUB_TEST_VULNERABILITY_OUTAGE").is_ok() {
             return Some(Self::with_outage());
         }
-        if let Ok(raw) = std::env::var("LIBREHUB_TEST_VULNERABILITY_FIXTURE")
+        if let Ok(raw) =
+            librehub_common::test_hooks::test_env("LIBREHUB_TEST_VULNERABILITY_FIXTURE")
             && let Ok(findings) = serde_json::from_str::<Vec<VulnerabilityFinding>>(&raw)
         {
             return Some(Self::new(findings));
