@@ -347,7 +347,9 @@ pub async fn middleware(
         .collect::<Vec<_>>();
     let resource = segments.get(2).copied().unwrap_or("");
     let scope = required_scope(&segments, write);
-    auth.require(scope)?;
+    if let Some(scope) = scope {
+        auth.require(scope)?;
+    }
     if let Some(bound) = auth.project_id {
         federated_boundary(&store, &auth, bound, &segments).await?;
     }
@@ -383,7 +385,14 @@ pub async fn middleware(
 }
 
 /// Which scope a route requires. Unknown project sub-resources fall back to project read/write.
-pub fn required_scope(segments: &[&str], write: bool) -> Scope {
+pub fn required_scope(segments: &[&str], write: bool) -> Option<Scope> {
+    if segments.get(2) == Some(&"whoami") {
+        // Any valid credential may ask who it is.
+        return None;
+    }
+    Some(required_scope_inner(segments, write))
+}
+fn required_scope_inner(segments: &[&str], write: bool) -> Scope {
     let pick = |read: Scope, mutate: Scope| if write { mutate } else { read };
     match segments.get(2).copied().unwrap_or("") {
         "tokens" => pick(Scope::TokensRead, Scope::TokensWrite),
@@ -435,6 +444,7 @@ async fn federated_boundary(
         )
     };
     match segments.get(2).copied().unwrap_or("") {
+        "whoami" => Ok(()),
         "projects" => match segments.get(3) {
             Some(id) if id.parse::<ProjectId>().ok() == Some(bound) => Ok(()),
             Some(_) => Err(ApiError::missing()),

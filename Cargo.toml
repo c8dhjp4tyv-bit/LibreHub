@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/common", "services/validator", "services/builder", "services/api", "services/publisher", "services/source", "services/catalog", "services/security", "services/supply-chain", "services/automation"]
+members = ["crates/common", "services/validator", "services/builder", "services/api", "services/publisher", "services/source", "services/catalog", "services/security", "services/supply-chain", "services/automation", "services/cli"]
 resolver = "2"
 
 [workspace.package]

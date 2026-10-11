@@ -32,6 +32,7 @@ pub struct AutomationHttp {
 
 pub fn router(state: AutomationHttp) -> Router {
     Router::new()
+        .route("/api/v1/whoami", get(whoami))
         .route("/api/v1/projects/{id}/automations", post(create).get(list))
         .route(
             "/api/v1/projects/{id}/automations/{automation}",
@@ -65,6 +66,14 @@ pub fn router(state: AutomationHttp) -> Router {
         .route("/api/v1/approvals/{approval}/reject", post(reject))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .with_state(state)
+}
+
+/// Never reveals secrets: identifiers, granted scopes and the project binding only.
+async fn whoami(Extension(auth): Extension<AuthenticatedDeveloper>) -> Json<Value> {
+    Json(json!({
+        "developer_id": auth.developer_id, "token_id": auth.token_id, "scopes": auth.scopes,
+        "project_id": auth.project_id, "federated": auth.is_federated(),
+    }))
 }
 
 pub(crate) fn failure(error: anyhow::Error) -> ApiError {

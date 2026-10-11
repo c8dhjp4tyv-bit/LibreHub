@@ -1,0 +1,97 @@
+name: LibreHub release
+description: >-
+  Build, verify, publish to beta and request stable promotion through a LibreHub
+  automation. Authenticates with GitHub Actions OIDC; no LibreHub secret is stored in GitHub.
+author: LibreHub
+inputs:
+  librehub-url:
+    description: Base URL of the LibreHub API (https).
+    required: true
+  project-id:
+    description: LibreHub project ID (UUID) that trusts this repository's workflow identity.
+    required: true
+  operation:
+    description: >-
+      build | wait-for-build | verify-provenance | publish-beta | wait-for-security |
+      request-promotion | wait-for-publication | build-and-publish-beta
+    required: true
+  automation:
+    description: Name or ID of the LibreHub automation to run.
+    required: false
+    default: Release Pipeline
+  audience:
+    description: OIDC audience; must equal the server's LIBREHUB_OIDC_AUDIENCE.
+    required: false
+    default: librehub
+  timeout-seconds:
+    description: Upper bound for waiting operations.
+    required: false
+    default: "1800"
+  cli-path:
+    description: Use an already installed librehub binary instead of building the pinned source.
+    required: false
+    default: ""
+outputs:
+  run_id:
+    description: LibreHub automation run ID.
+    value: ${{ steps.librehub.outputs.run_id }}
+  run_status:
+    description: Current run status.
+    value: ${{ steps.librehub.outputs.run_status }}
+  source_commit:
+    description: Immutable Git commit the run is bound to.
+    value: ${{ steps.librehub.outputs.source_commit }}
+  source_event_id:
+    description: M3 source event ID.
+    value: ${{ steps.librehub.outputs.source_event_id }}
+  build_id:
+    description: M1 build ID.
+    value: ${{ steps.librehub.outputs.build_id }}
+  build_status:
+    description: M1 build status.
+    value: ${{ steps.librehub.outputs.build_status }}
+  publication_id:
+    description: M2 publication ID (beta, or stable once promoted).
+    value: ${{ steps.librehub.outputs.publication_id }}
+  publication_status:
+    description: M2 publication status.
+    value: ${{ steps.librehub.outputs.publication_status }}
+  flatpak_ref:
+    description: Published Flatpak ref.
+    value: ${{ steps.librehub.outputs.flatpak_ref }}
+  attestation_status:
+    description: M6 attestation status (verified, pending, failed, not_configured).
+    value: ${{ steps.librehub.outputs.attestation_status }}
+  approval_id:
+    description: Pending stable-release approval ID, when requested.
+    value: ${{ steps.librehub.outputs.approval_id }}
+runs:
+  using: composite
+  steps:
+    - name: Install the LibreHub CLI from the pinned action source
+      if: inputs.cli-path == ''
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INSTALL_ROOT: ${{ runner.temp }}/librehub-cli
+      run: |
+        set -euo pipefail
+        cargo install --locked --path "$ACTION_PATH/../../services/cli" --root "$INSTALL_ROOT" --quiet
+    - name: Run the LibreHub operation
+      id: librehub
+      shell: bash
+      env:
+        # Inputs reach the shell only through the environment, never by string interpolation.
+        LIBREHUB_URL: ${{ inputs.librehub-url }}
+        LIBREHUB_OIDC_PROJECT: ${{ inputs.project-id }}
+        LIBREHUB_OIDC_AUDIENCE: ${{ inputs.audience }}
+        LIBREHUB_TIMEOUT: ${{ inputs.timeout-seconds }}
+        LH_OPERATION: ${{ inputs.operation }}
+        LH_AUTOMATION: ${{ inputs.automation }}
+        LH_PROJECT: ${{ inputs.project-id }}
+        LH_CLI: ${{ inputs.cli-path }}
+        LH_DEFAULT_CLI: ${{ runner.temp }}/librehub-cli/bin/librehub
+      run: |
+        set -euo pipefail
+        cli="${LH_CLI:-$LH_DEFAULT_CLI}"
+        "$cli" ci "$LH_OPERATION" --project "$LH_PROJECT" --automation "$LH_AUTOMATION"
