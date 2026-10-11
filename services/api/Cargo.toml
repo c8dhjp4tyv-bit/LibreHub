@@ -11,6 +11,8 @@ librehub-publisher.workspace = true
 librehub-source.workspace = true
 librehub-catalog.workspace = true
 librehub-security.workspace = true
+librehub-automation.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 base64 = "0.22"
 url = "2"
 sha2 = "0.10"
@@ -35,6 +37,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tempfile = "3"
 [dev-dependencies]
+librehub-automation = { workspace = true, features = ["testing"] }
 http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

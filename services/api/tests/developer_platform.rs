@@ -562,6 +562,8 @@ async fn restart_at_source_stages_retains_revision_and_handoff_is_at_most_once()
                     source_ref: "main".into(),
                     commit: Some("b".repeat(40)),
                     webhook: None,
+                    intent_key: None,
+                    skip_auto_publish: false,
                 },
                 false,
             )

@@ -25,6 +25,7 @@ pub struct Store {
     pub attestor: Option<Arc<librehub_supply_chain::Attestor>>,
     pub allowed_images: Vec<String>,
     pub attestation_repository: Option<librehub_publisher::repository::RepositoryConfig>,
+    pub automation_limits: crate::automation_store::AutomationLimits,
 }
 #[derive(Debug, thiserror::Error)]
 #[error("The build queue is full")]
@@ -84,6 +85,22 @@ impl Store {
         db.execute_batch(include_str!("../migrations/004_catalog.sql"))?;
         db.execute_batch(include_str!("../migrations/005_trust_security.sql"))?;
         db.execute_batch(include_str!("../migrations/006_supply_chain.sql"))?;
+        // M7: canonical build intent on source events (idempotent column add), then the rest.
+        let has_intent_key = db
+            .prepare("PRAGMA table_info(source_events)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "intent_key");
+        if !has_intent_key {
+            db.execute_batch("ALTER TABLE source_events ADD COLUMN intent_key TEXT;")?;
+        }
+        db.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS source_events_intent ON source_events(project_id, intent_key) WHERE intent_key IS NOT NULL;",
+        )?;
+        db.execute_batch(include_str!(
+            "../migrations/007_automation_integrations.sql"
+        ))?;
         // Existing M3 databases predate the explicit automatic-publication association.
         let has_auto_publish_id = db
             .prepare("PRAGMA table_info(source_events)")?
@@ -106,6 +123,7 @@ impl Store {
             attestor: None,
             allowed_images: vec![],
             attestation_repository: None,
+            automation_limits: Default::default(),
         })
     }
     pub(crate) async fn run<T, F>(&self, f: F) -> anyhow::Result<T>

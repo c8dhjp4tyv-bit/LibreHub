@@ -1,0 +1,45 @@
+# Copy to .github/workflows/librehub-release.yml in the repository LibreHub trusts.
+#
+# Replace the two values marked CHANGE ME. This file is documentation: it is NOT executed by
+# LibreHub's CI. The tested usage of the action lives in LibreHub's own .github/workflows/ci.yml
+# (job `github-oidc-integration`), which exercises a real GitHub-issued OIDC token.
+name: LibreHub release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read    # checkout only
+  id-token: write   # lets the job request a GitHub OIDC identity token; nothing else is granted
+jobs:
+  beta:
+    runs-on: ubuntu-latest
+    outputs:
+      build_id: ${{ steps.release.outputs.build_id }}
+      flatpak_ref: ${{ steps.release.outputs.flatpak_ref }}
+    steps:
+      - uses: actions/checkout@v4 # pin to a full commit SHA in production
+        with:
+          persist-credentials: false
+      - id: release
+        # CHANGE ME: pin to the full commit SHA of a LibreHub revision you have reviewed.
+        uses: c8dhjp4tyv-bit/LibreHub/actions/librehub@COMMIT_SHA
+        with:
+          librehub-url: https://librehub.example   # CHANGE ME
+          project-id: 00000000-0000-0000-0000-000000000000   # CHANGE ME
+          operation: build-and-publish-beta
+      - id: security
+        uses: c8dhjp4tyv-bit/LibreHub/actions/librehub@COMMIT_SHA
+        with:
+          librehub-url: https://librehub.example
+          project-id: 00000000-0000-0000-0000-000000000000
+          operation: wait-for-security
+      - id: promotion
+        uses: c8dhjp4tyv-bit/LibreHub/actions/librehub@COMMIT_SHA
+        with:
+          librehub-url: https://librehub.example
+          project-id: 00000000-0000-0000-0000-000000000000
+          operation: request-promotion
+      - run: echo "Awaiting approval $APPROVAL in LibreHub; this job cannot approve its own release."
+        env:
+          APPROVAL: ${{ steps.promotion.outputs.approval_id }}

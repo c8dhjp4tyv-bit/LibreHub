@@ -54,3 +54,11 @@ curl -X POST http://localhost:8080/api/v1/projects/<PROJECT_ID>/webhook-secret/r
 The new secret is returned once. Update the provider immediately; old signatures
 are rejected with no overlap. No secret value or raw webhook payload enters audit
 records/logs. Delivery IDs/project/build/commit/ref IDs are safe tracing fields.
+
+## Automations and outbound events (M7)
+
+The same verified delivery is also offered to enabled automations whose `push`/`tag` triggers
+match, independently of `auto_build`. Each run is keyed `delivery:<UUID>`; a redelivery returns the
+original runs (`automation_runs` in the response) and the build step shares the build M3 admitted
+for that commit. LibreHub's own signed *outbound* events are described in
+[outbound-webhooks.md](outbound-webhooks.md).

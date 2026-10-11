@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     })
     .await??;
     store.attestation_repository = config.publishing.as_ref().map(|p| p.repository.clone());
+    store.automation_limits = librehub_api::automation_store::AutomationLimits::from_env()?;
     store.configure_attestor().await?;
     let supervisor = Supervisor::new(store);
     supervisor
@@ -65,11 +66,15 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .map(|service| tokio::spawn(service.run()));
     tracing::info!(%address, "LibreHub API listening");
+    let provider: Arc<dyn librehub_source::SourceProvider> =
+        Arc::new(librehub_api::source_worker::git_from_env()?);
+    let automation_provider = provider.clone();
     let source_worker = librehub_api::source_worker::SourceWorker::new(
         supervisor.clone(),
-        Arc::new(librehub_api::source_worker::git_from_env()?),
+        provider,
         publishing.clone(),
     );
+    let source_wake = source_worker.wake.clone();
     source_worker.recover().await?;
     let key = supervisor.store.platform_key().await?;
     let source_task = tokio::spawn(source_worker.clone().run());
@@ -84,6 +89,79 @@ async fn main() -> anyhow::Result<()> {
             key,
         },
     );
+    // M7: automation engine, scheduler and outbound delivery. All state is durable in SQLite.
+    let automation_worker = {
+        let mut worker = librehub_api::automation_worker::AutomationWorker::new(
+            supervisor.store.clone(),
+            automation_provider,
+            publishing.clone(),
+            supervisor.wake.clone(),
+            source_wake,
+            supervisor.shutdown.clone(),
+        );
+        worker.scheduler_enabled =
+            std::env::var("LIBREHUB_AUTOMATION_SCHEDULER").map_or(true, |v| v != "disabled");
+        worker
+    };
+    let automation_task = tokio::spawn(automation_worker.clone().run());
+    let outbound_policy = librehub_automation::webhook::DestinationPolicy {
+        allow_loopback: std::env::var("LIBREHUB_WEBHOOK_ALLOW_LOOPBACK_FOR_TESTS")
+            .is_ok_and(|v| v == "1"),
+    };
+    let webhook_ca = std::env::var("LIBREHUB_WEBHOOK_CA_FILE")
+        .ok()
+        .map(std::fs::read)
+        .transpose()
+        .context("Cannot read LIBREHUB_WEBHOOK_CA_FILE")?;
+    let resolver: Arc<dyn librehub_api::outbound_worker::Resolver> =
+        Arc::new(librehub_api::outbound_worker::SystemResolver);
+    let outbound_worker = librehub_api::outbound_worker::OutboundWorker::new(
+        supervisor.store.clone(),
+        key,
+        Arc::new(librehub_api::outbound_worker::ReqwestTransport::new(
+            webhook_ca.as_deref(),
+        )?),
+        resolver.clone(),
+        outbound_policy,
+        supervisor.shutdown.clone(),
+    );
+    let mut outbound_worker = outbound_worker;
+    if let Ok(seconds) = std::env::var("LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS") {
+        let seconds: u64 = seconds
+            .parse()
+            .context("Invalid LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS")?;
+        anyhow::ensure!(
+            (1..=60).contains(&seconds),
+            "LIBREHUB_WEBHOOK_BACKOFF_BASE_SECONDS must be 1–60"
+        );
+        outbound_worker.backoff_base = std::time::Duration::from_secs(seconds);
+    }
+    let outbound_task = tokio::spawn(outbound_worker.clone().run());
+    let verifier = oidc_from_env()?;
+    let automation_router =
+        librehub_api::automation_http::router(librehub_api::automation_http::AutomationHttp {
+            store: supervisor.store.clone(),
+            wake: automation_worker.wake.clone(),
+        })
+        .route_layer(axum::middleware::from_fn_with_state(
+            supervisor.store.clone(),
+            librehub_api::auth::middleware,
+        ));
+    let integration_state = librehub_api::integration_http::IntegrationHttp {
+        store: supervisor.store.clone(),
+        key,
+        verifier,
+        policy: outbound_policy,
+        resolver,
+    };
+    let integration_private = librehub_api::integration_http::private_router(
+        integration_state.clone(),
+    )
+    .route_layer(axum::middleware::from_fn_with_state(
+        supervisor.store.clone(),
+        librehub_api::auth::middleware,
+    ));
+    let integration_public = librehub_api::integration_http::public_router(integration_state);
     let security_worker = librehub_api::security_worker::SecurityWorker::new(
         supervisor.store.clone(),
         publishing.as_ref().map(|p| p.repository.clone()),
@@ -125,6 +203,11 @@ async fn main() -> anyhow::Result<()> {
         .merge(sec_public)
         .merge(sec_dev)
         .merge(sec_admin)
+        .merge(automation_router)
+        .merge(integration_private)
+        .merge(integration_public)
+        .layer(axum::Extension(automation_worker))
+        .layer(axum::Extension(outbound_worker))
         .layer(axum::Extension(catalog_worker))
         .layer(axum::Extension(security_worker));
     let shutdown = supervisor.shutdown.clone();
@@ -157,6 +240,12 @@ async fn main() -> anyhow::Result<()> {
     attestation_task.await.context("Attestor task failed")??;
     source_task.await.context("Source worker task failed")??;
     catalog_task.await.context("Catalog worker task failed")??;
+    automation_task
+        .await
+        .context("Automation worker task failed")??;
+    outbound_task
+        .await
+        .context("Outbound delivery worker task failed")??;
     security_task
         .await
         .context("Security worker task failed")??;
@@ -164,6 +253,32 @@ async fn main() -> anyhow::Result<()> {
         task.await.context("Publisher task failed")??;
     }
     Ok(())
+}
+/// GitHub Actions OIDC federation is enabled by configuring the audience LibreHub expects.
+fn oidc_from_env() -> anyhow::Result<Option<Arc<librehub_api::oidc_verifier::OidcVerifier>>> {
+    let Ok(audience) = std::env::var("LIBREHUB_OIDC_AUDIENCE") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        !audience.trim().is_empty(),
+        "LIBREHUB_OIDC_AUDIENCE must not be empty"
+    );
+    let issuer = std::env::var("LIBREHUB_OIDC_ISSUER")
+        .unwrap_or_else(|_| librehub_automation::oidc::GITHUB_ISSUER.into());
+    let jwks = std::env::var("LIBREHUB_OIDC_JWKS_URL")
+        .unwrap_or_else(|_| format!("{}/.well-known/jwks", issuer.trim_end_matches('/')));
+    // Plain HTTP is for the local test issuer only and has to be requested explicitly.
+    let insecure = std::env::var("LIBREHUB_OIDC_INSECURE_FOR_TESTS").is_ok_and(|v| v == "1");
+    let config = librehub_automation::oidc::OidcConfig {
+        issuer,
+        audience,
+        leeway_secs: 30,
+        max_lifetime_secs: 3600,
+    };
+    let fetcher = librehub_api::oidc_verifier::HttpJwksFetcher::new(&jwks, insecure)?;
+    Ok(Some(Arc::new(
+        librehub_api::oidc_verifier::OidcVerifier::new(config, Arc::new(fetcher)),
+    )))
 }
 async fn shutdown_signal() {
     #[cfg(unix)]

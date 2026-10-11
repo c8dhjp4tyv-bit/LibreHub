@@ -1,4 +1,4 @@
-name: M1–M6 checks
+name: M1–M7 checks
 on:
   push:
   pull_request:
@@ -27,7 +27,7 @@ jobs:
           python3 -m pip install --break-system-packages protobuf==6.33.5 jsonschema==4.25.1
           python3 scripts/validate-attestation.py services/supply-chain/tests/fixtures/build.json
       - run: docker compose config --quiet
-      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/test-trust-security.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
+      - run: python3 -m py_compile scripts/test-publish-install.py scripts/test-developer-platform.py scripts/test-public-store.py scripts/test-trust-security.py scripts/test-automation-integrations.py scripts/m7_fixtures.py scripts/ci-github-oidc.py scripts/source_fixture.py scripts/publishing_faults.py infra/docker/bootstrap-repository.py
   web:
     runs-on: ubuntu-24.04
     steps:
@@ -43,6 +43,50 @@ jobs:
         working-directory: apps/web
       - run: npm run lint && npm run typecheck && npm test && npm run build
         working-directory: apps/web
+  github-oidc-integration:
+    # Uses the job's real, GitHub-issued OIDC token. LibreHub verifies it against GitHub's
+    # published JWKS; no long-lived LibreHub credential exists in this repository.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: oidc
+      - run: cargo build --locked -p librehub-api -p librehub-cli
+      - name: Start LibreHub and trust this repository's workflow identity
+        run: python3 scripts/ci-github-oidc.py prepare
+      - name: Show this job's non-secret identity claims
+        run: python3 scripts/ci-github-oidc.py claims
+      - name: Run the LibreHub composite action with the real OIDC identity
+        id: librehub
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        uses: ./actions/librehub
+        with:
+          librehub-url: http://127.0.0.1:8080
+          project-id: ${{ env.LIBREHUB_JOB_PROJECT }}
+          operation: build
+          audience: librehub-ci-github
+          cli-path: ${{ github.workspace }}/target/debug/librehub
+      - name: Verify the outcome
+        if: always()
+        env:
+          ACTION_OUTCOME: ${{ steps.librehub.outcome }}
+          ACTION_COMMIT: ${{ steps.librehub.outputs.source_commit }}
+        run: python3 scripts/ci-github-oidc.py verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: github-oidc-proof-${{ github.sha }}
+          path: ${{ runner.temp }}/github-oidc-proof.json
+          retention-days: 7
+          if-no-files-found: ignore
   worker-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -150,6 +194,18 @@ jobs:
         with:
           name: supply-chain-evidence-${{ github.sha }}
           path: data/m6-proof/
+          retention-days: 7
+      - name: Real M7 automation, OIDC federation, approval, stable promotion, signed webhooks and crash recovery
+        run: |
+          . data/dev/publisher.env
+          python3 scripts/test-automation-integrations.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: automation-integrations-evidence-${{ github.sha }}
+          path: |
+            data/m7-proof/m7-proof.json
+            data/m7-proof/trusted-keys.json
           retention-days: 7
       - name: Prepare the rootless Podman worker and delegated cgroups
         run: |

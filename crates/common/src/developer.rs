@@ -30,6 +30,7 @@ macro_rules! identity {
         }
     };
 }
+pub(crate) use identity;
 identity!(DeveloperId);
 identity!(TokenId);
 identity!(ProjectId);
@@ -70,6 +71,24 @@ pub enum Scope {
     TokensWrite,
     #[serde(rename = "audit:read")]
     AuditRead,
+    /// M7: inspect automation definitions, runs and approvals.
+    #[serde(rename = "automations:read")]
+    AutomationsRead,
+    /// M7: create, change and disable automation definitions.
+    #[serde(rename = "automations:write")]
+    AutomationsWrite,
+    /// M7: start a run of an existing automation. Cannot change what the automation does.
+    #[serde(rename = "automations:run")]
+    AutomationsRun,
+    /// M7: inspect integration identities and outbound webhooks.
+    #[serde(rename = "integrations:read")]
+    IntegrationsRead,
+    /// M7: manage trusted CI identities and outbound webhooks.
+    #[serde(rename = "integrations:write")]
+    IntegrationsWrite,
+    /// M7: approve or reject stable release candidates. Never grantable to federated CI.
+    #[serde(rename = "releases:approve")]
+    ReleasesApprove,
     /// Operator-only access to historical unowned M1/M2 jobs. Never issued by public handlers.
     #[serde(rename = "operator")]
     Operator,
@@ -87,6 +106,24 @@ impl Scope {
             Self::TokensRead,
             Self::TokensWrite,
             Self::AuditRead,
+            Self::AutomationsRead,
+            Self::AutomationsWrite,
+            Self::AutomationsRun,
+            Self::IntegrationsRead,
+            Self::IntegrationsWrite,
+            Self::ReleasesApprove,
+        ]
+    }
+    /// Scopes a federated CI identity may ever receive. Mutation of definitions,
+    /// integrations, tokens, approvals and direct publication are excluded by construction.
+    pub fn federated_grantable() -> &'static [Self] {
+        &[
+            Self::ProjectsRead,
+            Self::BuildsRead,
+            Self::BuildsWrite,
+            Self::PublishesRead,
+            Self::AutomationsRead,
+            Self::AutomationsRun,
         ]
     }
 }
@@ -99,6 +136,13 @@ pub struct ApiToken {
     pub created_at: Timestamp,
     pub last_used_at: Option<Timestamp>,
     pub revoked_at: Option<Timestamp>,
+    /// M7 federated credentials expire and are bound to one project. Absent on classic tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_id: Option<crate::IntegrationId>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +198,8 @@ pub enum TriggerType {
     WebhookTag,
     Api,
     Retry,
+    /// M7: build requested by a durable automation run.
+    Automation,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceRevision {

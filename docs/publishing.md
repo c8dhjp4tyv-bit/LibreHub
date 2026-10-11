@@ -187,3 +187,11 @@ normal client flow, resource limits and executable acceptance evidence.
 See [supply-chain policy](supply-chain.md), [attestations and offline verification](attestations.md), [worker isolation](build-isolation.md), [rebuild verification](reproducible-builds.md), and [verification/recovery](m6-verification.md).
 Cryptographic provenance is separate from publisher identity, vulnerability analysis,
 moderation and application safety. Legacy releases carry no fabricated build evidence.
+
+## Automated publication and promotion (M7)
+
+Automations use `enqueue_publish` unchanged: identity remains `(build, channel)`, so repeated
+supervision, retries and recovery return the existing record. Stable promotion publishes the
+validated beta build through the same queue and receives its own M6 release attestation; see
+[release-promotion.md](release-promotion.md). A signed publication is never rolled back by an
+automation status change.

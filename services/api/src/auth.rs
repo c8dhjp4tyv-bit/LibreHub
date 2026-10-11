@@ -34,6 +34,8 @@ pub struct AuthenticatedDeveloper {
     pub developer_id: DeveloperId,
     pub token_id: TokenId,
     pub scopes: Vec<Scope>,
+    /// Set for federated CI credentials, which are bound to exactly one project.
+    pub project_id: Option<ProjectId>,
 }
 impl AuthenticatedDeveloper {
     pub fn require(&self, scope: Scope) -> Result<(), ApiError> {
@@ -45,6 +47,13 @@ impl AuthenticatedDeveloper {
             ));
         }
         Ok(())
+    }
+    pub fn is_federated(&self) -> bool {
+        self.project_id.is_some()
+    }
+    /// Federated credentials only ever see their bound project; others see "not found".
+    pub fn can_access_project(&self, project: ProjectId) -> bool {
+        self.project_id.is_none_or(|bound| bound == project)
     }
 }
 #[derive(Debug, Serialize)]
@@ -101,6 +110,13 @@ pub fn encrypt_secret(
     project: ProjectId,
     secret: &Secret,
 ) -> anyhow::Result<Vec<u8>> {
+    encrypt_secret_aad(key, &project.to_string(), secret)
+}
+pub fn decrypt_secret(key: &[u8; 32], project: ProjectId, bytes: &[u8]) -> anyhow::Result<Secret> {
+    decrypt_secret_aad(key, &project.to_string(), bytes)
+}
+/// AEAD with an explicit associated-data string, so a ciphertext only opens for its own owner.
+pub fn encrypt_secret_aad(key: &[u8; 32], aad: &str, secret: &Secret) -> anyhow::Result<Vec<u8>> {
     let mut nonce = [0; 24];
     getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("Secure randomness unavailable"))?;
     let cipher = XChaCha20Poly1305::new(key.into());
@@ -109,13 +125,13 @@ pub fn encrypt_secret(
             XNonce::from_slice(&nonce),
             chacha20poly1305::aead::Payload {
                 msg: secret.0.as_bytes(),
-                aad: project.to_string().as_bytes(),
+                aad: aad.as_bytes(),
             },
         )
         .map_err(|_| anyhow::anyhow!("Cannot encrypt webhook secret"))?;
     Ok([nonce.to_vec(), encrypted].concat())
 }
-pub fn decrypt_secret(key: &[u8; 32], project: ProjectId, bytes: &[u8]) -> anyhow::Result<Secret> {
+pub fn decrypt_secret_aad(key: &[u8; 32], aad: &str, bytes: &[u8]) -> anyhow::Result<Secret> {
     anyhow::ensure!(bytes.len() >= 24, "Invalid webhook secret storage");
     let cipher = XChaCha20Poly1305::new(key.into());
     let raw = cipher
@@ -123,7 +139,7 @@ pub fn decrypt_secret(key: &[u8; 32], project: ProjectId, bytes: &[u8]) -> anyho
             XNonce::from_slice(&bytes[..24]),
             chacha20poly1305::aead::Payload {
                 msg: &bytes[24..],
-                aad: project.to_string().as_bytes(),
+                aad: aad.as_bytes(),
             },
         )
         .map_err(|_| anyhow::anyhow!("Cannot decrypt webhook secret"))?;
@@ -178,7 +194,7 @@ impl Store {
         anyhow::ensure!(
             !name.trim().is_empty()
                 && name.len() <= 120
-                && scopes.len() <= 11
+                && scopes.len() <= 24
                 && !scopes.is_empty(),
             PlatformError("invalid_request")
         );
@@ -188,8 +204,8 @@ impl Store {
         let record=self.run(move|db|{
             let tx=db.transaction()?;
             let active:bool=tx.query_row("SELECT status='active' FROM developers WHERE id=?1",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(active,PlatformError("developer_disabled"));
-            let count:i64=tx.query_row("SELECT count(*) FROM api_tokens WHERE developer_id=?1 AND json_extract(record,'$.revoked_at') IS NULL",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(count<32,PlatformError("token_limit_exceeded"));
-            let record=ApiToken{id,developer_id:developer,name,scopes,created_at:chrono::Utc::now(),last_used_at:None,revoked_at:None};
+            let count:i64=tx.query_row("SELECT count(*) FROM api_tokens WHERE developer_id=?1 AND json_extract(record,'$.revoked_at') IS NULL AND json_extract(record,'$.project_id') IS NULL",[developer.to_string()],|r|r.get(0))?;anyhow::ensure!(count<32,PlatformError("token_limit_exceeded"));
+            let record=ApiToken{id,developer_id:developer,name,scopes,created_at:chrono::Utc::now(),last_used_at:None,revoked_at:None,expires_at:None,project_id:None,integration_id:None};
             tx.execute("INSERT INTO api_tokens(id,developer_id,hash,record) VALUES(?1,?2,?3,?4)",params![id.to_string(),developer.to_string(),hash,serde_json::to_string(&record)?])?;
             crate::platform_store::audit(&tx,developer,"token.created",None,&id.to_string(),"succeeded")?;tx.commit()?;Ok(record)
         }).await?;
@@ -218,8 +234,10 @@ impl Store {
             let Some((stored,record,active))=row else{return Ok(None)};
             let mut record:ApiToken=serde_json::from_str(&record)?;
             if !bool::from(stored.ct_eq(&digest))||record.revoked_at.is_some()||!active{return Ok(None)}
+            // Federated credentials are short lived; expiry is enforced on every request.
+            if record.expires_at.is_some_and(|t|t<=chrono::Utc::now()){return Ok(None)}
             record.last_used_at=Some(chrono::Utc::now());tx.execute("UPDATE api_tokens SET record=?2 WHERE id=?1",params![id.to_string(),serde_json::to_string(&record)?])?;tx.commit()?;
-            Ok(Some(AuthenticatedDeveloper{developer_id:record.developer_id,token_id:record.id,scopes:record.scopes}))
+            Ok(Some(AuthenticatedDeveloper{developer_id:record.developer_id,token_id:record.id,scopes:record.scopes,project_id:record.project_id}))
         }).await
     }
     pub async fn tokens(
@@ -328,60 +346,13 @@ pub async fn middleware(
         .split('/')
         .collect::<Vec<_>>();
     let resource = segments.get(2).copied().unwrap_or("");
-    let scope = match resource {
-        "tokens" => {
-            if write {
-                Scope::TokensWrite
-            } else {
-                Scope::TokensRead
-            }
-        }
-        "audit" => Scope::AuditRead,
-        "builds"
-            if segments
-                .get(4)
-                .is_some_and(|s| ["publish", "publishes"].contains(s)) =>
-        {
-            if write {
-                Scope::PublishesWrite
-            } else {
-                Scope::PublishesRead
-            }
-        }
-        "builds" => {
-            if write {
-                Scope::BuildsWrite
-            } else {
-                Scope::BuildsRead
-            }
-        }
-        "publishes" => {
-            if write {
-                Scope::PublishesWrite
-            } else {
-                Scope::PublishesRead
-            }
-        }
-        "projects" if segments.get(4) == Some(&"webhook-secret") => Scope::WebhooksWrite,
-        "projects"
-            if segments.get(4) == Some(&"builds") || segments.get(4) == Some(&"source-events") =>
-        {
-            if write {
-                Scope::BuildsWrite
-            } else {
-                Scope::BuildsRead
-            }
-        }
-        "projects" if segments.get(4) == Some(&"audit") => Scope::AuditRead,
-        _ => {
-            if write {
-                Scope::ProjectsWrite
-            } else {
-                Scope::ProjectsRead
-            }
-        }
-    };
-    auth.require(scope)?;
+    let scope = required_scope(&segments, write);
+    if let Some(scope) = scope {
+        auth.require(scope)?;
+    }
+    if let Some(bound) = auth.project_id {
+        federated_boundary(&store, &auth, bound, &segments).await?;
+    }
     if resource == "builds"
         && let Some(id) = segments.get(3)
         && let Ok(id) = id.parse::<BuildId>()
@@ -411,4 +382,125 @@ pub async fn middleware(
     request.headers_mut().remove(header::AUTHORIZATION);
     request.extensions_mut().insert(auth);
     Ok(next.run(request).await)
+}
+
+/// Which scope a route requires. Unknown project sub-resources fall back to project read/write.
+pub fn required_scope(segments: &[&str], write: bool) -> Option<Scope> {
+    if segments.get(2) == Some(&"whoami") {
+        // Any valid credential may ask who it is.
+        return None;
+    }
+    Some(required_scope_inner(segments, write))
+}
+fn required_scope_inner(segments: &[&str], write: bool) -> Scope {
+    let pick = |read: Scope, mutate: Scope| if write { mutate } else { read };
+    match segments.get(2).copied().unwrap_or("") {
+        "tokens" => pick(Scope::TokensRead, Scope::TokensWrite),
+        "audit" => Scope::AuditRead,
+        "approvals" => pick(Scope::AutomationsRead, Scope::ReleasesApprove),
+        "builds"
+            if segments
+                .get(4)
+                .is_some_and(|s| ["publish", "publishes"].contains(s)) =>
+        {
+            pick(Scope::PublishesRead, Scope::PublishesWrite)
+        }
+        "builds" => pick(Scope::BuildsRead, Scope::BuildsWrite),
+        "publishes" => pick(Scope::PublishesRead, Scope::PublishesWrite),
+        "projects" => match segments.get(4).copied() {
+            Some("webhook-secret") => Scope::WebhooksWrite,
+            Some("builds") | Some("source-events") => pick(Scope::BuildsRead, Scope::BuildsWrite),
+            Some("audit") => Scope::AuditRead,
+            Some("automations") => {
+                // Starting or cancelling a run is `automations:run`; editing definitions is `write`.
+                let last = segments.last().copied().unwrap_or("");
+                if write && (last == "run" || last == "cancel") {
+                    Scope::AutomationsRun
+                } else {
+                    pick(Scope::AutomationsRead, Scope::AutomationsWrite)
+                }
+            }
+            Some("approvals") => pick(Scope::AutomationsRead, Scope::ReleasesApprove),
+            Some("integrations") => pick(Scope::IntegrationsRead, Scope::IntegrationsWrite),
+            _ => pick(Scope::ProjectsRead, Scope::ProjectsWrite),
+        },
+        _ => pick(Scope::ProjectsRead, Scope::ProjectsWrite),
+    }
+}
+
+/// A federated CI credential is bound to one project: it can never list projects, tokens,
+/// audit or approvals globally, and other projects (and their builds) do not exist for it.
+async fn federated_boundary(
+    store: &Store,
+    auth: &AuthenticatedDeveloper,
+    bound: ProjectId,
+    segments: &[&str],
+) -> Result<(), ApiError> {
+    let denied = || {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "federated_scope_violation",
+            "This credential is bound to a single project",
+        )
+    };
+    match segments.get(2).copied().unwrap_or("") {
+        "whoami" => Ok(()),
+        "projects" => match segments.get(3) {
+            Some(id) if id.parse::<ProjectId>().ok() == Some(bound) => Ok(()),
+            Some(_) => Err(ApiError::missing()),
+            None => Err(denied()),
+        },
+        "builds" | "publishes" => {
+            let Some(id) = segments.get(3) else {
+                return Err(denied());
+            };
+            let build = if segments[2] == "builds" {
+                id.parse::<BuildId>().ok()
+            } else {
+                match id.parse::<PublishId>() {
+                    Ok(id) => store
+                        .publish_record(id)
+                        .await
+                        .map_err(ApiError::internal)?
+                        .map(|r| r.build_id),
+                    Err(_) => None,
+                }
+            };
+            match build {
+                Some(build) => {
+                    let project = store
+                        .build_project(build)
+                        .await
+                        .map_err(ApiError::internal)?;
+                    if project == Some(bound) {
+                        Ok(())
+                    } else {
+                        Err(ApiError::missing())
+                    }
+                }
+                None => Err(ApiError::missing()),
+            }
+        }
+        _ => {
+            let _ = auth;
+            Err(denied())
+        }
+    }
+}
+impl Store {
+    pub async fn build_project(&self, build: BuildId) -> anyhow::Result<Option<ProjectId>> {
+        self.run(move |db| {
+            let id: Option<Option<String>> = db
+                .query_row(
+                    "SELECT project_id FROM build_owners WHERE build_id=?1",
+                    [build.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            id.flatten()
+                .map(|id| id.parse().map_err(Into::into))
+                .transpose()
+        })
+        .await
+    }
 }
