@@ -44,18 +44,25 @@ impl Store {
         channel: RepositoryChannel,
     ) -> anyhow::Result<Option<PublishRecord>> {
         if self.attestor.is_some() || self.supply_policy == SupplyChainPolicy::Enforce {
-            let source: SourceEvent = self
+            let event = self
                 .run(move |db| {
-                    let raw: String = db.query_row(
-                        "SELECT record FROM source_events WHERE id=?1",
-                        [event_id.to_string()],
-                        |r| r.get(0),
-                    )?;
-                    Ok(serde_json::from_str(&raw)?)
+                    Ok(db
+                        .query_row(
+                            "SELECT record,auto_publish_state FROM source_events WHERE id=?1",
+                            [event_id.to_string()],
+                            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                        )
+                        .optional()?)
                 })
                 .await?;
-            if !self.check_supply_policy(source.build_id).await?.allowed {
-                return Err(AdmissionError::SupplyChainDenied.into());
+            if let Some((raw, state)) = event {
+                if state != "pending" {
+                    return Ok(None);
+                }
+                let source: SourceEvent = serde_json::from_str(&raw)?;
+                if !self.check_supply_policy(source.build_id).await?.allowed {
+                    return Err(AdmissionError::SupplyChainDenied.into());
+                }
             }
         }
         self.run(move |db| {

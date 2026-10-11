@@ -240,3 +240,135 @@ async fn reproducibility_history_retains_inconclusive_and_mismatch() {
         2
     );
 }
+
+// Supply-chain metadata is synthetic; these tests never run a container.
+async fn add_build_evidence_metadata(store: &Store, id: BuildId) {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../supply-chain/tests/fixtures/build.json")).unwrap();
+    let definition = &fixture["predicate"]["buildDefinition"];
+    let mut build = store.get(id).await.unwrap().unwrap();
+    build.provenance =
+        Some(serde_json::from_value(definition["externalParameters"]["source"].clone()).unwrap());
+    build.result.as_mut().unwrap().environment =
+        Some(serde_json::from_value(definition["internalParameters"].clone()).unwrap());
+    let db = Connection::open(store.data_dir.join("builds.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE builds SET record=?2 WHERE id=?1",
+        rusqlite::params![id.to_string(), serde_json::to_string(&build).unwrap()],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn public_evidence_detects_failed_build_and_release_jobs() {
+    let t = tempfile::tempdir().unwrap();
+    let store = Store::open(t.path()).unwrap();
+    let p = published(&store).await;
+    add_build_evidence_metadata(&store, p.build_id).await;
+    let db = Connection::open(t.path().join("builds.sqlite3")).unwrap();
+    for (kind, target, state, expected) in [
+        (
+            "build",
+            p.build_id.to_string(),
+            "pending",
+            AttestationStatus::Pending,
+        ),
+        (
+            "build",
+            p.build_id.to_string(),
+            "failed",
+            AttestationStatus::Failed,
+        ),
+        (
+            "release",
+            p.id.to_string(),
+            "failed",
+            AttestationStatus::Failed,
+        ),
+        (
+            "build",
+            p.id.to_string(),
+            "failed",
+            AttestationStatus::Pending,
+        ),
+        (
+            "release",
+            p.build_id.to_string(),
+            "failed",
+            AttestationStatus::Pending,
+        ),
+        (
+            "build",
+            BuildId::new().to_string(),
+            "failed",
+            AttestationStatus::Pending,
+        ),
+    ] {
+        db.execute("DELETE FROM attestation_jobs", []).unwrap();
+        db.execute(
+            "INSERT INTO attestation_jobs(kind,target_id,state,updated_at) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![kind, target, state, chrono::Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        let evidence = supply_chain_http::evidence(&store, p.app_id.clone(), p.id)
+            .await
+            .unwrap_or_else(|_| panic!("Expected public evidence"));
+        assert_eq!(evidence.status, expected, "{kind}/{target}/{state}");
+        assert_eq!(
+            evidence.verification.code,
+            if expected == AttestationStatus::Failed {
+                "attestation_failed"
+            } else {
+                "attestation_pending"
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_rebuild_configuration_does_not_enqueue_a_build() {
+    let t = tempfile::tempdir().unwrap();
+    let store = Store::open(t.path()).unwrap();
+    let id = successful(&store).await;
+    add_build_evidence_metadata(&store, id).await;
+    let config = librehub_builder::DockerConfig {
+        timeout: std::time::Duration::ZERO,
+        ..Default::default()
+    };
+    assert!(store.verify_reproducibility(id, config).await.is_err());
+    assert!(store.pending().await.unwrap().is_empty());
+    assert!(store.latest_reproducibility(id).await.unwrap().is_none());
+    let db = Connection::open(t.path().join("builds.sqlite3")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM builds", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn missing_rebuild_snapshot_terminalizes_the_queued_build() {
+    let t = tempfile::tempdir().unwrap();
+    let store = Store::open(t.path()).unwrap();
+    let id = successful(&store).await;
+    add_build_evidence_metadata(&store, id).await;
+    let config = librehub_builder::DockerConfig {
+        binary: "podman".into(),
+        ..Default::default()
+    };
+    let result = store.verify_reproducibility(id, config).await.unwrap();
+    assert_eq!(result.state, ReproducibilityState::Inconclusive);
+    let rebuild = store
+        .get(result.rebuild_id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rebuild.status, BuildStatus::Failed);
+    assert_eq!(rebuild.error.unwrap().code, "reproducibility_check_failed");
+    assert!(rebuild.finished_at.is_some());
+    assert!(store.pending().await.unwrap().is_empty());
+    assert_eq!(
+        store.get(id).await.unwrap().unwrap().status,
+        BuildStatus::Succeeded
+    );
+}

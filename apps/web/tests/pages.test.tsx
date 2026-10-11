@@ -74,7 +74,7 @@ describe("server pages consume catalog DTOs", () => {
     expect(getCatalog).toHaveBeenCalledWith("/api/v1/catalog/search?q=Live");
     expect(screen.getByRole("textbox")).toHaveValue("Live");
   });
-  it("app detail shows actual release, install action and source", async () => {
+  it.each([false, true])("app detail renders when provenance rejects: %s", async (rejectProvenance) => {
     const app: App = {
       ...card,
       description: "An actual description",
@@ -93,13 +93,18 @@ describe("server pages consume catalog DTOs", () => {
         command: "flatpak install --user librehub org.example.Test",
       },
     };
-    getCatalog.mockImplementation((p: string) =>
-      Promise.resolve(
-        p.endsWith("/provenance") ? null : p.includes("/releases")
+    getCatalog.mockImplementation((p: string) => {
+      if (p.endsWith("/provenance")) {
+        return rejectProvenance
+          ? Promise.reject(new Error("Provenance endpoint unavailable"))
+          : Promise.resolve(null);
+      }
+      return Promise.resolve(
+        p.includes("/releases")
           ? { items: [release], total: 1, limit: 24, offset: 0 }
           : app,
-      ),
-    );
+      );
+    });
     const { default: Detail } = await import("../app/apps/[app_id]/page");
     render(
       await Detail({
@@ -113,6 +118,7 @@ describe("server pages consume catalog DTOs", () => {
     expect(
       screen.getByRole("link", { name: /Install with Flatpak/ }),
     ).toHaveAttribute("href", app.install.flatpakref_url);
+    expect(screen.getByText("Attestation unavailable")).toBeVisible();
     expect(screen.getByText("MIT")).toBeVisible();
     expect(screen.getAllByText("2.0").length).toBeGreaterThan(0);
   });

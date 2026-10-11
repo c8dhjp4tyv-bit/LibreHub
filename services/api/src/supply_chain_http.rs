@@ -133,7 +133,7 @@ pub async fn evidence(
                 result.verification.code = "immutable_source_unavailable".into();
                 return Ok(result);
             }
-            let failed = store.run(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM attestation_jobs WHERE target_id=?1 AND state='failed')",[id.to_string()],|r|r.get::<_,bool>(0))?)).await.map_err(ApiError::internal)?;
+            let failed = store.run(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM attestation_jobs WHERE state='failed' AND ((kind='release' AND target_id=?1) OR (kind='build' AND target_id=?2)))",[id.to_string(), publication.build_id.to_string()],|r|r.get::<_,bool>(0))?)).await.map_err(ApiError::internal)?;
             if failed {
                 result.status = AttestationStatus::Failed;
                 result.verification.code = "attestation_failed".into();

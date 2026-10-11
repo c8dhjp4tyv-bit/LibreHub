@@ -1227,3 +1227,73 @@ async fn automatic_admission_retries_only_full_and_propagates_storage_errors() {
         }
     }
 }
+
+#[tokio::test]
+async fn automatic_publication_checks_supply_policy_only_for_pending_events() {
+    let (mut h, _, event) = automatic_publication_fixture().await;
+    h.store.supply_policy = SupplyChainPolicy::Enforce;
+    let db = rusqlite::Connection::open(h.root.path().join("builds.sqlite3")).unwrap();
+    for state in ["queued", "skipped"] {
+        db.execute(
+            "UPDATE source_events SET auto_publish_state=?2 WHERE id=?1",
+            rusqlite::params![event.id.to_string(), state],
+        )
+        .unwrap();
+        assert!(
+            h.store
+                .enqueue_auto_publish(event.id, RepositoryChannel::Beta)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            h.store
+                .last_supply_policy(event.build_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    db.execute(
+        "UPDATE source_events SET auto_publish_state='pending' WHERE id=?1",
+        [event.id.to_string()],
+    )
+    .unwrap();
+    assert!(
+        h.store
+            .enqueue_auto_publish(event.id, RepositoryChannel::Beta)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Supply-chain policy denied publication")
+    );
+    assert!(
+        !h.store
+            .last_supply_policy(event.build_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .allowed
+    );
+    assert!(
+        h.store
+            .publications(event.build_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Missing events retain the transactional lookup's error in both policy modes.
+    for mode in [SupplyChainPolicy::Development, SupplyChainPolicy::Enforce] {
+        h.store.supply_policy = mode;
+        let error = h
+            .store
+            .enqueue_auto_publish(SourceEventId::new(), RepositoryChannel::Beta)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::QueryReturnedNoRows)
+        ));
+    }
+}

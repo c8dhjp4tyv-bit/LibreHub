@@ -533,6 +533,7 @@ impl Store {
         config.network = env.network.clone();
         config.isolation = env.isolation;
         config.writable_bytes = env.writable_bytes.max(1);
+        let executor = Arc::new(librehub_builder::DockerExecutor::new(config)?);
         let rebuild = self.insert(manifest.clone(), original.architecture).await?;
         result.rebuild_id = Some(rebuild.id);
         // Persist an inconclusive attempt before execution so a crash remains observable.
@@ -576,7 +577,6 @@ impl Store {
                 Ok(())
             })
             .await?;
-            let executor = Arc::new(librehub_builder::DockerExecutor::new(config)?);
             crate::worker::Supervisor::new(self.clone())
                 .execute(rebuild.id, executor)
                 .await?;
@@ -608,6 +608,20 @@ impl Store {
                 result.rebuild_content = Some(b);
             }
             Err(_) => {
+                if let Some(rebuilt) = self.get(rebuild.id).await?
+                    && !rebuilt.status.is_terminal()
+                {
+                    self.transition(
+                        rebuilt.id,
+                        BuildStatus::Failed,
+                        None,
+                        Some(BuildError {
+                            code: "reproducibility_check_failed".into(),
+                            message: "Reproducibility rebuild could not complete".into(),
+                        }),
+                    )
+                    .await?;
+                }
                 result.reason = "rebuild_execution_environment_or_comparison_failed".into();
             }
         }

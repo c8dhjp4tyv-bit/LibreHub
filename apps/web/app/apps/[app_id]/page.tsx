@@ -62,7 +62,9 @@ export default async function AppPage(props: Props) {
       ? app.current_stable_release
       : app.current_beta_release;
   if (!release) notFound();
-  const evidence = await getCatalog<SupplyChainEvidence>(`/api/v1/catalog/apps/${encodeURIComponent(app.app_id)}/releases/${encodeURIComponent(release.publication_id)}/provenance`);
+  const evidence = await getCatalog<SupplyChainEvidence>(
+    `/api/v1/catalog/apps/${encodeURIComponent(app.app_id)}/releases/${encodeURIComponent(release.publication_id)}/provenance`,
+  ).catch(() => null);
   const commit = commitLink(release.source_url, release.source_commit);
   return (
     <>

@@ -158,6 +158,7 @@ jobs:
           docker save librehub-worker:m1 | podman load
       - name: Real hardened rootless worker and enforced attested publication acceptance
         run: |
+          rm -rf data/m6-proof/
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
           . data/dev/publisher.env
