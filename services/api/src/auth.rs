@@ -236,6 +236,12 @@ impl Store {
             if !bool::from(stored.ct_eq(&digest))||record.revoked_at.is_some()||!active{return Ok(None)}
             // Federated credentials are short lived; expiry is enforced on every request.
             if record.expires_at.is_some_and(|t|t<=chrono::Utc::now()){return Ok(None)}
+            // A credential minted through an integration is valid only while that integration is
+            // enabled and not revoked, so disabling or narrowing it takes effect on the next request.
+            if let Some(integration)=record.integration_id{
+                let trusted:Option<bool>=tx.query_row("SELECT enabled=1 AND revoked_at IS NULL FROM integration_connections WHERE id=?1",[integration.to_string()],|r|r.get(0)).optional()?;
+                if trusted!=Some(true){return Ok(None)}
+            }
             record.last_used_at=Some(chrono::Utc::now());tx.execute("UPDATE api_tokens SET record=?2 WHERE id=?1",params![id.to_string(),serde_json::to_string(&record)?])?;tx.commit()?;
             Ok(Some(AuthenticatedDeveloper{developer_id:record.developer_id,token_id:record.id,scopes:record.scopes,project_id:record.project_id}))
         }).await

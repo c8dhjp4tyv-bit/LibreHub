@@ -25,7 +25,7 @@ async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
 fs2 = "0.4"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled", "backup"] }
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true

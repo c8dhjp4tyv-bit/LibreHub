@@ -111,7 +111,7 @@ impl FixtureDnsResolver {
     }
 
     pub fn from_env() -> Option<Self> {
-        if let Ok(raw) = std::env::var("LIBREHUB_TEST_DNS_TXT") {
+        if let Ok(raw) = librehub_common::test_hooks::test_env("LIBREHUB_TEST_DNS_TXT") {
             let mut resolver = Self::new();
             // Format: "domain1=txt1;domain2=txt2"
             for item in raw.split(';') {

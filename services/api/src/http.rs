@@ -64,6 +64,7 @@ pub fn router_with_publisher(state: ApiState, publishing: Option<Publishing>) ->
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/live", get(crate::ops::live))
         .route("/librehub.flatpakrepo", get(stable_repo))
         .route("/librehub-beta.flatpakrepo", get(beta_repo))
         .route("/repository.gpg", get(public_key))
@@ -396,7 +397,14 @@ async fn ready(
         ),
         None => (true, "ok"),
     };
-    let outbound_ok = outbound.as_ref().is_none_or(|Extension(o)| o.ready());
+    // Webhook delivery degrades on its own: a stopped or degraded worker is reported as a capability
+    // and never makes the catalog, store or publishing path unready.
+    let webhook_capability = match outbound.as_ref() {
+        None => "ok",
+        Some(Extension(o)) if o.health.degraded().is_some() => "degraded",
+        Some(Extension(o)) if o.ready() => "ok",
+        Some(_) => "unavailable",
+    };
     let authentication = database;
     let attestor = state
         .supervisor
@@ -414,7 +422,6 @@ async fn ready(
         && publisher
         && automation_ok
         && scheduler != "unavailable"
-        && outbound_ok
         && !state.supervisor.shutdown.is_cancelled();
     let component = |ok| if ok { "ok" } else { "unavailable" };
     (
@@ -424,7 +431,7 @@ async fn ready(
             StatusCode::SERVICE_UNAVAILABLE
         },
         Json(
-            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher),"automation_worker":component(automation_ok),"scheduler":scheduler,"outbound_delivery":component(outbound_ok)}}),
+            serde_json::json!({"ready":ready,"components":{"attestor":component(attestor),"catalog_database":component(database && catalog_ready),"catalog_worker":component(catalog_ready),"source":component(source),"webhook_worker":component(source),"authentication":component(authentication),"database":component(database),"flat_manager":component(manager),"repository":component(repository),"publisher":component(publisher),"automation_worker":component(automation_ok),"scheduler":scheduler,"outbound_delivery":webhook_capability}}),
         ),
     )
 }
@@ -482,6 +489,13 @@ async fn create(
     headers: HeaderMap,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Response, ApiError> {
+    if !state.supervisor.store.storage_admissible() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_capacity_low",
+            "Storage capacity is below the admission threshold; new builds are refused until space is freed",
+        ));
+    }
     if state.supervisor.shutdown.is_cancelled() {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -53,6 +53,7 @@ pub struct AutomationWorker {
     pub wake: Arc<Notify>,
     pub shutdown: CancellationToken,
     pub running: Arc<AtomicBool>,
+    pub outbox_failures: Arc<AtomicU64>,
     pub scheduler_enabled: bool,
     pub scheduler_running: Arc<AtomicBool>,
 }
@@ -123,6 +124,7 @@ impl AutomationWorker {
             wake: Arc::new(Notify::new()),
             shutdown,
             running: Arc::new(AtomicBool::new(false)),
+            outbox_failures: Arc::new(AtomicU64::new(0)),
             scheduler_enabled: true,
             scheduler_running: Arc::new(AtomicBool::new(false)),
         }
@@ -134,21 +136,41 @@ impl AutomationWorker {
         self.running.store(true, Ordering::Release);
         self.scheduler_running
             .store(self.scheduler_enabled, Ordering::Release);
+        // Failures are contained in this worker: the shared shutdown token is never cancelled here,
+        // so the API and the other workers keep running (see docs/m8-verification.md).
         let result = self.run_inner().await;
         self.running.store(false, Ordering::Release);
         self.scheduler_running.store(false, Ordering::Release);
-        if result.is_err() {
-            self.shutdown.cancel();
-        }
         result
     }
     async fn run_inner(&self) -> anyhow::Result<()> {
         let concurrency = self.store.automation_limits.step_concurrency.max(1);
+        let mut failing = 0u32;
         loop {
             if self.shutdown.is_cancelled() {
                 return Ok(());
             }
-            self.tick_once(concurrency).await?;
+            match self.tick_once(concurrency).await {
+                Ok(()) => failing = 0,
+                Err(error) => {
+                    let category = crate::outbound_worker::classify(&error);
+                    if category == crate::outbound_worker::FailureCategory::StorageCorrupt {
+                        // Stop admitting and advancing work until an operator restores the database.
+                        tracing::error!(category = category.as_str(), error = %error, "Automation supervisor stopped: the control-plane database is unusable and needs operator action");
+                        self.running.store(false, Ordering::Release);
+                        self.shutdown.cancelled().await;
+                        return Ok(());
+                    }
+                    failing = failing.saturating_add(1);
+                    let delay = crate::outbound_worker::loop_backoff(failing);
+                    tracing::warn!(category = category.as_str(), error = %error, retry_in_ms = delay.as_millis() as u64, "Automation supervisor tick failed; retrying");
+                    tokio::select! {
+                        _ = self.shutdown.cancelled() => {},
+                        _ = tokio::time::sleep(delay) => {},
+                    }
+                    continue;
+                }
+            }
             tokio::select! {
                 _ = self.shutdown.cancelled() => {},
                 _ = self.wake.notified() => {},
@@ -163,7 +185,15 @@ impl AutomationWorker {
                 tracing::info!(automation_run_id=%run, "Scheduled automation occurrence admitted");
             }
         }
-        self.consume_outbox().await?;
+        if let Err(error) = self.consume_outbox().await {
+            self.outbox_failures.fetch_add(1, Ordering::Relaxed);
+            let category = crate::outbound_worker::classify(&error);
+            tracing::warn!(category = category.as_str(), error = %error, "Automation outbox consumption failed; admission will be retried");
+            if category == crate::outbound_worker::FailureCategory::StorageCorrupt {
+                return Err(error);
+            }
+            // A malformed event must not hold up work already admitted to the store.
+        }
         let ids = self
             .store
             .active_run_ids(self.store.automation_limits.active_runs_global)
@@ -176,9 +206,16 @@ impl AutomationWorker {
                 tasks.spawn(async move { this.advance(id).await });
             }
             while let Some(done) = tasks.join_next().await {
-                if let Err(e) = done? {
-                    // One run's trouble must not stop the supervisor; it is retried next tick.
-                    tracing::error!(error=%e, "Automation run could not be advanced");
+                // A panic is retried next tick if the run remains non-terminal. Durable writes
+                // before the panic remain committed; nothing in one run can end the supervisor.
+                match done {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::error!(error=%e, "Automation run could not be advanced; retried next tick")
+                    }
+                    Err(e) => {
+                        tracing::error!(error=%e, panicked=e.is_panic(), "Automation run task ended unexpectedly; retried next tick")
+                    }
                 }
             }
         }

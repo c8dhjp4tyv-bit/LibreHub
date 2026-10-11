@@ -251,3 +251,15 @@ Known limitations: a federated identity with `automations:run` can use up the pe
 hourly run cap (60 by default) and thereby delay other triggers of that automation; the owner can
 revoke the identity. The dashboard stores the API token in an httpOnly, SameSite=Strict cookie (Secure over https);
 deploy it behind TLS. Private repositories and GitHub App installations are not supported.
+
+## M8: production hardening
+
+- **Test-only switches are gated by the build.** Every `LIBREHUB_TEST_*` and `*_FOR_TESTS` variable is read through `librehub_common::test_hooks::test_env`, which ignores them in release builds. A deployment cannot enable a fixture DNS answer, a vulnerability fixture or outage, a fault barrier, loopback webhook destinations or plain-HTTP identity metadata.
+- **Production configuration is validated before anything binds.** See [production security](production-security.md#configuration-rules).
+- **Metrics are never public.** They are served only on `LIBREHUB_METRICS_BIND`, and the proxy returns 404 for `/metrics`.
+- **Forwarded addresses are trusted only from configured proxies.**
+- **A newer database is never opened.** The store refuses a schema from a newer release without modifying it.
+- **Credentials and keys stay out of archives.** Backups never include keys or locks; see [backups](backups.md).
+- **Authentication respects integration state.** A credential minted through an integration is rejected when that integration is disabled or revoked.
+
+The full threat review of M8 and the open items are listed in [production security](production-security.md) and [M8 verification](m8-verification.md).

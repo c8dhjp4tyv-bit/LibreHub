@@ -1,3 +1,4 @@
+BEGIN IMMEDIATE;
 -- Additive M6 evidence. SQLite transactions are the atomic attestation store.
 CREATE TABLE IF NOT EXISTS attestor_keys (
  key_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','retired','revoked')), updated_at TEXT NOT NULL
@@ -32,3 +33,4 @@ CREATE TABLE IF NOT EXISTS reproducibility_attempts (
  rebuild_id TEXT REFERENCES builds(id), state TEXT NOT NULL, reason TEXT NOT NULL,
  original_content TEXT, rebuild_content TEXT, checked_at TEXT NOT NULL
 );
+COMMIT;

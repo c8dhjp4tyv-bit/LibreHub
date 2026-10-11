@@ -1,0 +1,14 @@
+# Routes alerts to a receiver. The default receiver only logs: add your paging or chat webhook
+# (for example a Slack or email receiver) through a file mounted here, never inline secrets.
+route:
+  receiver: log-only
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: log-only
+      repeat_interval: 1h
+receivers:
+  - name: log-only

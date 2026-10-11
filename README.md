@@ -349,3 +349,22 @@ Set `LIBREHUB_OIDC_AUDIENCE` to enable GitHub Actions federation, `LIBREHUB_AUTO
 to stop schedule evaluation, and see the docs for `LIBREHUB_WEBHOOK_*`. The developer dashboard is served by the
 web app at `/dashboard` (API token kept in an httpOnly cookie). Deferred to M8 and later: GitHub App
 installations and check-run updates, teams, a distributed scheduler/broker, PostgreSQL and horizontal scaling.
+
+## M8 production infrastructure
+
+M8 turns the development stack into a documented, single-controller production reference. It is not a multi-node or high-availability system, and it has not been run end to end in production. Read these first:
+
+- [Production deployment](docs/production-deployment.md): topology, supported platform, installation.
+- [Operations](docs/operations.md), [monitoring](docs/monitoring.md), [backups](docs/backups.md), [disaster recovery](docs/disaster-recovery.md), [upgrades](docs/upgrades.md).
+- [Production security](docs/production-security.md) and [capacity planning](docs/capacity-planning.md).
+- [M8 verification](docs/m8-verification.md): what was checked, how, and what was not.
+
+Quick checks that need no container runtime:
+
+```bash
+cargo test --workspace --locked
+deploy/production/scripts/ci-validate.sh target/debug/librehub-api   # production profile gate
+target/debug/librehub-api --check-config                              # validate the current environment
+```
+
+M8 also repairs two M7 defects: an outbound webhook failure no longer ends the process, and OIDC policy changes now revoke existing credentials. See [M7 verification](docs/m7-verification.md#m8-follow-up).

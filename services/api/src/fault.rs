@@ -6,7 +6,7 @@ use std::path::Path;
 pub async fn barrier(data_dir: &Path, stage: &str) {
     #[cfg(debug_assertions)]
     {
-        if std::env::var("LIBREHUB_TEST_AUTOMATION_FAULT_STAGE")
+        if librehub_common::test_hooks::test_env("LIBREHUB_TEST_AUTOMATION_FAULT_STAGE")
             .ok()
             .as_deref()
             == Some(stage)

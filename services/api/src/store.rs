@@ -15,6 +15,9 @@ pub const MAX_LOG_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_LOG_ENTRIES: u64 = 10_000;
 pub const MAX_PENDING_BUILDS: usize = 64;
 
+/// Highest schema version this release understands. Opening a newer database is refused.
+pub const SCHEMA_VERSION: i64 = 8;
+
 #[derive(Clone)]
 pub struct Store {
     db: Arc<Mutex<Connection>>,
@@ -26,6 +29,8 @@ pub struct Store {
     pub allowed_images: Vec<String>,
     pub attestation_repository: Option<librehub_publisher::repository::RepositoryConfig>,
     pub automation_limits: crate::automation_store::AutomationLimits,
+    /// Minimum free bytes on the data directory before new work is admitted. Zero disables it.
+    pub min_free_bytes: u64,
 }
 #[derive(Debug, thiserror::Error)]
 #[error("The build queue is full")]
@@ -52,6 +57,23 @@ impl Store {
                 .unwrap_or_else(|| data_dir.join("builds.sqlite3")),
         )?;
         db.busy_timeout(Duration::from_secs(5))?;
+        // A database written by a newer release must not be opened, and silently mutated, by this one.
+        let has_schema_table: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_schema_table {
+            let found: i64 = db.query_row(
+                "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+                [],
+                |r| r.get(0),
+            )?;
+            anyhow::ensure!(
+                found <= SCHEMA_VERSION,
+                "Database schema version {found} is newer than this release supports ({SCHEMA_VERSION}); refusing to start rather than downgrade it"
+            );
+        }
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             PRAGMA foreign_keys=ON;
@@ -101,6 +123,25 @@ impl Store {
         db.execute_batch(include_str!(
             "../migrations/007_automation_integrations.sql"
         ))?;
+        // M8: a claimed webhook delivery records its lease, so an attempt abandoned inside a
+        // running process is recovered when the lease expires. Existing rows are additive.
+        let has_delivery_lease = db
+            .prepare("PRAGMA table_info(integration_deliveries)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "lease_expires_at");
+        if !has_delivery_lease {
+            db.execute_batch(
+                "ALTER TABLE integration_deliveries ADD COLUMN lease_expires_at TEXT;",
+            )?;
+        }
+        db.execute_batch(
+            "CREATE INDEX IF NOT EXISTS integration_deliveries_lease ON integration_deliveries(lease_expires_at) WHERE status='delivering';",
+        )?;
+        db.execute_batch(&format!(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES({SCHEMA_VERSION});"
+        ))?;
         // Existing M3 databases predate the explicit automatic-publication association.
         let has_auto_publish_id = db
             .prepare("PRAGMA table_info(source_events)")?
@@ -124,7 +165,18 @@ impl Store {
             allowed_images: vec![],
             attestation_repository: None,
             automation_limits: Default::default(),
+            min_free_bytes: 0,
         })
+    }
+    /// Whether the data directory has room for new work. Unknown capacity is treated as full.
+    pub fn storage_admissible(&self) -> bool {
+        self.min_free_bytes == 0
+            || fs2::available_space(&self.data_dir).is_ok_and(|free| free >= self.min_free_bytes)
+    }
+    /// How long a statement waits for a lock held by another connection (operator tools, backups)
+    /// before it fails with `SQLITE_BUSY`. Failures are retried by the workers, never fatal.
+    pub async fn set_busy_timeout(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.run(move |db| Ok(db.busy_timeout(timeout)?)).await
     }
     pub(crate) async fn run<T, F>(&self, f: F) -> anyhow::Result<T>
     where

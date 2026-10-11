@@ -460,6 +460,23 @@ impl GithubIdentityPolicy {
         }
         Ok(())
     }
+    /// Canonical form for storage and comparison: lists are sorted and de-duplicated, so reordering
+    /// is not a policy change while every real change to the trusted identity is.
+    pub fn normalized(&self) -> Self {
+        fn canonical(mut list: Vec<String>) -> Vec<String> {
+            list.sort();
+            list.dedup();
+            list
+        }
+        let mut policy = self.clone();
+        policy.allowed_refs = canonical(policy.allowed_refs);
+        policy.allowed_workflows = canonical(policy.allowed_workflows);
+        policy.allowed_environments = canonical(policy.allowed_environments);
+        policy.allowed_event_types = canonical(policy.allowed_event_types);
+        policy.allowed_permissions.sort();
+        policy.allowed_permissions.dedup();
+        policy
+    }
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let id = format!("github:{}:{}", self.repository_owner_id, self.repository_id);

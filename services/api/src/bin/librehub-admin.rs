@@ -19,6 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let database = std::env::var("LIBREHUB_DATABASE_PATH")
         .ok()
         .map(std::path::PathBuf::from);
+    // Backup and restore run beside a live API: they must not take the supervisor lock first.
+    if let Some(result) = archive_command(&args, &data, database.as_deref()) {
+        return result;
+    }
     let mut store = Store::open_at(std::path::Path::new(&data), database.as_deref())?;
 
     if args.is_empty() {
@@ -163,4 +167,49 @@ fn print_usage() {
   librehub-admin security status <APP_ID>
 "#
     );
+}
+
+/// `backup --to DIR`, `verify-backup --from DIR`, `restore --from DIR` (into the configured data
+/// directory). Returns `None` for any other command.
+fn archive_command(
+    args: &[String],
+    data: &str,
+    database: Option<&std::path::Path>,
+) -> Option<anyhow::Result<()>> {
+    let data = std::path::Path::new(data);
+    let database_path =
+        database.map_or_else(|| data.join("builds.sqlite3"), std::path::Path::to_path_buf);
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from)
+    };
+    Some(match args.first().map(String::as_str)? {
+        "backup" => value("--to")
+            .ok_or_else(|| anyhow::anyhow!("usage: backup --to DIR"))
+            .and_then(|to| librehub_api::backup::create(data, &database_path, &to))
+            .map(|manifest| println!("{}", serde_json::to_string(&manifest).unwrap_or_default())),
+        "verify-backup" => value("--from")
+            .ok_or_else(|| anyhow::anyhow!("usage: verify-backup --from DIR"))
+            .and_then(|from| librehub_api::backup::verify(&from))
+            .map(|manifest| {
+                println!(
+                    "verified: {} files, schema {}",
+                    manifest.files.len() + 1,
+                    manifest.schema_version
+                )
+            }),
+        "restore" => value("--from")
+            .ok_or_else(|| anyhow::anyhow!("usage: restore --from DIR"))
+            .and_then(|from| librehub_api::backup::restore(&from, data, &database_path))
+            .map(|manifest| {
+                println!(
+                    "restored: {} files, schema {}; provision keys before starting",
+                    manifest.files.len() + 1,
+                    manifest.schema_version
+                )
+            }),
+        _ => return None,
+    })
 }

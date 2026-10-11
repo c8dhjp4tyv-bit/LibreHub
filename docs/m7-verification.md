@@ -61,3 +61,7 @@ passed. Crash barriers exist only in debug builds
   stable event ID.
 * Local environment note: the `librehub-security` test `dns_resolver_uses_ipv6_nameserver`
   needs IPv6 loopback and fails in IPv6-less sandboxes; it is unrelated to M7.
+
+## M8 follow-up
+
+Both M7 defects found in review are fixed and regression-tested in M8: outbound webhook failure isolation, and OIDC policy-change revocation. The automation supervisor had the same process-ending pattern, which M8 also fixes. See [M8 verification](m8-verification.md) for the commands and results.

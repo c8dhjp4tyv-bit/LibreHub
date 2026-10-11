@@ -264,4 +264,5 @@ mod tests {
 }
 
 mod supply_chain;
+pub mod test_hooks;
 pub use supply_chain::*;

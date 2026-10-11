@@ -272,6 +272,7 @@ impl Store {
         if name.trim().is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
             return Err(PlatformError("invalid_request").into());
         }
+        let policy = policy.normalized();
         let limits = self.automation_limits.clone();
         self.run(move |db| {
             let tx = db.transaction()?;
@@ -363,8 +364,17 @@ impl Store {
                         // Trusting a different repository is a new connection, not an edit.
                         return Err(PlatformError("invalid_request").into());
                     }
-                    revoke_tokens |= existing.allowed_permissions != p.allowed_permissions;
-                    serde_json::to_string(p)?
+                    let next = p.normalized();
+                    // Narrowing any part of the trusted identity (branch, workflow, environment,
+                    // event, owner, permission or lifetime) must not leave credentials minted under
+                    // the old policy valid. An unchanged policy has no side effects.
+                    let mut trusted_existing = existing.normalized();
+                    let mut trusted_next = next.clone();
+                    // Repository names are display-only; numeric IDs establish trust.
+                    trusted_existing.repository = None;
+                    trusted_next.repository = None;
+                    revoke_tokens |= trusted_existing != trusted_next;
+                    serde_json::to_string(&next)?
                 }
                 None => current.policy.to_string(),
             };
@@ -378,10 +388,23 @@ impl Store {
                 ],
             )?;
             if revoke_tokens {
-                tx.execute(
+                // Only this connection's credentials: the match is on the integration identity.
+                let revoked = tx.execute(
                     "UPDATE api_tokens SET record=json_set(record,'$.revoked_at',?2) WHERE json_extract(record,'$.integration_id')=?1 AND json_extract(record,'$.revoked_at') IS NULL",
                     params![id.to_string(), now_s()],
                 )?;
+                if revoked > 0 {
+                    // Counts only: never token identifiers or secrets.
+                    integration_audit(
+                        &tx,
+                        limits.integration_audit_per_project,
+                        Some(project),
+                        &owner.to_string(),
+                        "integration.credentials_revoked",
+                        &id.to_string(),
+                        &format!("revoked:{revoked}"),
+                    )?;
+                }
             }
             let action = if enabled == Some(false) {
                 "integration.disabled"
@@ -840,10 +863,88 @@ impl Store {
         })
         .await
     }
-    pub async fn recover_deliveries(&self) -> anyhow::Result<usize> {
-        self.run(|db| Ok(db.execute("UPDATE integration_deliveries SET status='retry_wait',next_attempt_at=?1 WHERE status='delivering'", [now_s()])?)).await
+    /// Startup recovery: every `delivering` row belongs to a process that no longer exists.
+    pub async fn recover_deliveries(&self, max_attempts: u32) -> anyhow::Result<usize> {
+        self.reclaim(
+            max_attempts,
+            true,
+            "process_restarted",
+            std::time::Duration::ZERO,
+        )
+        .await
     }
-    pub async fn claim_deliveries(&self, limit: usize) -> anyhow::Result<Vec<DueDelivery>> {
+    /// Lease recovery for attempts abandoned inside a running process: a task that panicked or
+    /// was cancelled, or whose result could not be written. Their lease has expired by now.
+    pub async fn reclaim_expired_deliveries(
+        &self,
+        max_attempts: u32,
+        backoff_base: std::time::Duration,
+    ) -> anyhow::Result<usize> {
+        self.reclaim(max_attempts, false, "lease_expired", backoff_base)
+            .await
+    }
+    async fn reclaim(
+        &self,
+        max_attempts: u32,
+        all: bool,
+        reason: &'static str,
+        backoff_base: std::time::Duration,
+    ) -> anyhow::Result<usize> {
+        let limits = self.automation_limits.clone();
+        self.run(move |db| {
+            let tx = db.transaction()?;
+            let rows: Vec<(String, u32)> = tx
+                .prepare("SELECT id,attempts FROM integration_deliveries WHERE status='delivering' AND (?1 OR lease_expires_at IS NULL OR lease_expires_at<=?2)")?
+                .query_map(params![all, now_s()], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            for (id, attempt) in &rows {
+                // After a restart the work is due at once. Within a live process the normal retry
+                // schedule applies, so a delivery that keeps dying in-process does not spin.
+                let delay = if all {
+                    std::time::Duration::ZERO
+                } else {
+                    librehub_automation::retry::backoff_with(backoff_base, *attempt, 0.5)
+                };
+                interrupt_row(&tx, id, *attempt, reason, max_attempts, delay, &limits)?;
+            }
+            tx.commit()?;
+            for (id, attempt) in &rows {
+                record_interruption(db, id, *attempt, reason);
+            }
+            Ok(rows.len())
+        })
+        .await
+    }
+    /// Make an abandoned attempt due again, or terminal once its attempt budget is spent. The
+    /// update is fenced on the attempt number, so a stale recovery cannot overwrite a newer one.
+    pub async fn interrupt_delivery(
+        &self,
+        delivery: DeliveryId,
+        attempt: u32,
+        reason: &'static str,
+        max_attempts: u32,
+        delay: std::time::Duration,
+    ) -> anyhow::Result<Option<DeliveryStatus>> {
+        let limits = self.automation_limits.clone();
+        self.run(move |db| {
+            let id = delivery.to_string();
+            let tx = db.transaction()?;
+            let status = interrupt_row(&tx, &id, attempt, reason, max_attempts, delay, &limits)?;
+            tx.commit()?;
+            if status.is_some() {
+                record_interruption(db, &id, attempt, reason);
+            }
+            Ok(status)
+        })
+        .await
+    }
+    /// Claim due deliveries for `lease`. A claimed delivery that is not finished when the lease
+    /// expires is recovered by [`Self::reclaim_expired_deliveries`]: at-least-once, same identity.
+    pub async fn claim_deliveries(
+        &self,
+        limit: usize,
+        lease: std::time::Duration,
+    ) -> anyhow::Result<Vec<DueDelivery>> {
         self.run(move |db| {
             let tx = db.transaction()?;
             type Row = (String, String, String, String, String, Vec<u8>, u32, String, Vec<u8>);
@@ -851,9 +952,10 @@ impl Store {
                 .prepare("SELECT d.id,d.webhook_id,d.project_id,d.event_id,d.event_type,d.payload,d.attempts,w.url,w.secret FROM integration_deliveries d JOIN webhook_subscriptions w ON w.id=d.webhook_id WHERE d.status IN ('pending','retry_wait') AND d.next_attempt_at<=?1 AND w.enabled=1 ORDER BY d.next_attempt_at LIMIT ?2")?
                 .query_map(params![now_s(), limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))?
                 .collect::<Result<_, _>>()?;
+            let lease_until = (Utc::now() + chrono::Duration::from_std(lease)?).to_rfc3339();
             let mut out = vec![];
             for (id, hook, project, event, kind, payload, attempts, url, cipher) in rows {
-                tx.execute("UPDATE integration_deliveries SET status='delivering',attempts=attempts+1 WHERE id=?1", [&id])?;
+                tx.execute("UPDATE integration_deliveries SET status='delivering',attempts=attempts+1,lease_expires_at=?2 WHERE id=?1", params![&id, lease_until])?;
                 out.push(DueDelivery { id: id.parse()?, webhook_id: hook.parse()?, project_id: project.parse()?, event_id: event.parse()?, event_type: kind, payload, attempt: attempts + 1, url, cipher });
             }
             tx.commit()?;
@@ -870,7 +972,7 @@ impl Store {
         http_status: Option<u16>,
         outcome: DeliveryOutcome,
         max_attempts: u32,
-    ) -> anyhow::Result<DeliveryStatus> {
+    ) -> anyhow::Result<FinishResult> {
         let limits = self.automation_limits.clone();
         self.run(move |db| {
             let tx = db.transaction()?;
@@ -879,10 +981,6 @@ impl Store {
                 DeliveryOutcome::Retry { reason, .. } => ("retry", Some((*reason).to_owned())),
                 DeliveryOutcome::Permanent { reason } => ("permanent", Some((*reason).to_owned())),
             };
-            tx.execute(
-                "INSERT INTO integration_attempts(delivery_id,attempt,started_at,duration_ms,http_status,outcome,error) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![delivery.id.to_string(), delivery.attempt, started.to_rfc3339(), duration_ms as i64, http_status, label, error],
-            )?;
             let status = match outcome {
                 DeliveryOutcome::Delivered => DeliveryStatus::Delivered,
                 DeliveryOutcome::Permanent { .. } => DeliveryStatus::Failed,
@@ -894,9 +992,18 @@ impl Store {
                 _ => Utc::now(),
             };
             let now = now_s();
+            // Fenced on the claimed attempt: a lease that expired and was reclaimed (or a newer
+            // attempt) must never be overwritten by this result. Nothing is written in that case.
+            let fenced = tx.execute(
+                "UPDATE integration_deliveries SET status=?2,next_attempt_at=?3,last_http_status=?4,last_error=?5,lease_expires_at=NULL,delivered_at=CASE WHEN ?2='delivered' THEN ?6 ELSE delivered_at END,finished_at=CASE WHEN ?7 THEN ?6 ELSE finished_at END WHERE id=?1 AND status='delivering' AND attempts=?8",
+                params![delivery.id.to_string(), status.as_str(), next.to_rfc3339(), http_status, error, now, status.is_terminal(), delivery.attempt],
+            )?;
+            if fenced == 0 {
+                return Ok(FinishResult::Superseded);
+            }
             tx.execute(
-                "UPDATE integration_deliveries SET status=?2,next_attempt_at=?3,last_http_status=?4,last_error=?5,delivered_at=CASE WHEN ?2='delivered' THEN ?6 ELSE delivered_at END,finished_at=CASE WHEN ?7 THEN ?6 ELSE finished_at END WHERE id=?1",
-                params![delivery.id.to_string(), status.as_str(), next.to_rfc3339(), http_status, error, now, status.is_terminal()],
+                "INSERT INTO integration_attempts(delivery_id,attempt,started_at,duration_ms,http_status,outcome,error) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![delivery.id.to_string(), delivery.attempt, started.to_rfc3339(), duration_ms as i64, http_status, label, error],
             )?;
             if matches!(status, DeliveryStatus::Failed | DeliveryStatus::DeadLetter) {
                 let owner: String = tx.query_row("SELECT owner FROM webhook_subscriptions WHERE id=?1", [delivery.webhook_id.to_string()], |r| r.get(0))?;
@@ -913,7 +1020,7 @@ impl Store {
                 [delivery.webhook_id.to_string()],
             )?;
             tx.commit()?;
-            Ok(status)
+            Ok(FinishResult::Recorded(status))
         })
         .await
     }
@@ -1024,6 +1131,83 @@ impl Store {
             Ok((pending, backlog))
         })
         .await
+    }
+}
+
+/// Result of recording a finished attempt. `Superseded` means a recovery or a newer attempt
+/// already owns the delivery, so this result was discarded and nothing was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishResult {
+    Recorded(DeliveryStatus),
+    Superseded,
+}
+
+/// Move one abandoned attempt to `retry_wait`, or to `dead_letter` once its budget is spent.
+/// Fenced on the attempt number and on `delivering`, so only the attempt that owns the row moves it.
+fn interrupt_row(
+    tx: &rusqlite::Transaction,
+    id: &str,
+    attempt: u32,
+    reason: &'static str,
+    max_attempts: u32,
+    delay: std::time::Duration,
+    limits: &crate::automation_store::AutomationLimits,
+) -> anyhow::Result<Option<DeliveryStatus>> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT webhook_id,project_id FROM integration_deliveries WHERE id=?1 AND status='delivering' AND attempts=?2",
+            params![id, attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((webhook, project)) = row else {
+        return Ok(None);
+    };
+    let status = if attempt >= max_attempts {
+        DeliveryStatus::DeadLetter
+    } else {
+        DeliveryStatus::RetryWait
+    };
+    let next = Utc::now() + chrono::Duration::from_std(delay)?;
+    tx.execute(
+        "UPDATE integration_deliveries SET status=?2,next_attempt_at=?3,last_error=?4,lease_expires_at=NULL,finished_at=CASE WHEN ?5 THEN ?6 ELSE finished_at END WHERE id=?1",
+        params![id, status.as_str(), next.to_rfc3339(), reason, status.is_terminal(), now_s()],
+    )?;
+    if status == DeliveryStatus::DeadLetter {
+        let owner: String = tx.query_row(
+            "SELECT owner FROM webhook_subscriptions WHERE id=?1",
+            [&webhook],
+            |r| r.get(0),
+        )?;
+        let project: ProjectId = project.parse()?;
+        audit(
+            tx,
+            owner.parse()?,
+            "webhook.delivery_failed",
+            Some(project),
+            id,
+            status.as_str(),
+        )?;
+        integration_audit(
+            tx,
+            limits.integration_audit_per_project,
+            Some(project),
+            "system",
+            "webhook.delivery_failed",
+            id,
+            status.as_str(),
+        )?;
+    }
+    Ok(Some(status))
+}
+
+/// Best-effort history row for an interrupted attempt. Diagnostics must never block recovery.
+fn record_interruption(db: &Connection, id: &str, attempt: u32, reason: &str) {
+    if let Err(error) = db.execute(
+        "INSERT INTO integration_attempts(delivery_id,attempt,started_at,duration_ms,http_status,outcome,error) VALUES(?1,?2,?3,0,NULL,'interrupted',?4)",
+        params![id, attempt, now_s(), reason],
+    ) {
+        tracing::warn!(delivery_id = id, %error, "Cannot record an interrupted delivery attempt");
     }
 }
 

@@ -1,0 +1,144 @@
+# LibreHub production reference stack: the containers that need no host privilege.
+#
+# The API, its build supervisor and the TLS proxy run on the host under systemd (see
+# docs/production-deployment.md). The Docker socket is never mounted into any container here.
+# Every secret is a file under /etc/librehub/secrets, mounted as a Compose secret. Nothing secret
+# is written in this file. Image references must be pinned by digest by the release process.
+name: librehub
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: '10m', max-file: '5'}
+
+services:
+  web:
+    image: ${LIBREHUB_WEB_IMAGE:?set to the released librehub-web image digest}
+    restart: unless-stopped
+    user: '10001:10001'
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 512m
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: '3000'
+      LIBREHUB_API_URL: ${LIBREHUB_API_URL:-http://librehub-host:8080}
+      LIBREHUB_API_PUBLIC_URL: ${LIBREHUB_API_PUBLIC_URL:?set in .env}
+      LIBREHUB_WEB_PUBLIC_URL: ${LIBREHUB_WEB_PUBLIC_URL:?set in .env}
+    extra_hosts: ['librehub-host:host-gateway']
+    ports: ['127.0.0.1:3000:3000']
+    networks: [edge]
+    logging: *logging
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  flat-manager-database:
+    image: ${LIBREHUB_POSTGRES_IMAGE:?set to a digest-pinned postgres image}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: librehub
+      POSTGRES_DB: librehub
+      POSTGRES_PASSWORD_FILE: /run/secrets/flat-manager-db-password
+    secrets: [flat-manager-db-password]
+    volumes: [flat-manager-database:/var/lib/postgresql/data]
+    networks: [manager]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U librehub -d librehub']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  flat-manager:
+    image: ${LIBREHUB_FLAT_MANAGER_IMAGE:?set to the digest-pinned flat-manager image}
+    restart: unless-stopped
+    depends_on:
+      flat-manager-database:
+        condition: service_healthy
+    environment:
+      REPO_CONFIG: /run/secrets/flat-manager-config
+      GNUPGHOME: /run/librehub/gnupg
+      ACTIX_WORKERS: '2'
+    secrets: [flat-manager-config]
+    # The signed repository is the public product: the proxy serves it read-only from the host.
+    volumes:
+      - /var/lib/librehub/repository:/repositories
+      - /etc/librehub/gpg:/run/librehub/gnupg:ro
+      - flat-manager-state:/state
+    ports: ['127.0.0.1:8081:8080']
+    networks: [manager, edge]
+    stop_grace_period: 30s
+    logging: *logging
+
+  prometheus:
+    image: ${LIBREHUB_PROMETHEUS_IMAGE:?set to a digest-pinned prometheus image}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports: ['127.0.0.1:9090:9090']
+    extra_hosts: ['librehub-host:host-gateway']
+    networks: [observability]
+    logging: *logging
+
+  alertmanager:
+    image: ${LIBREHUB_ALERTMANAGER_IMAGE:?set to a digest-pinned alertmanager image}
+    restart: unless-stopped
+    command: [--config.file=/etc/alertmanager/alertmanager.yml, --storage.path=/alertmanager]
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    networks: [observability]
+    logging: *logging
+
+  grafana:
+    image: ${LIBREHUB_GRAFANA_IMAGE:?set to a digest-pinned grafana image}
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_SERVER_ROOT_URL: ${LIBREHUB_GRAFANA_PUBLIC_URL:-http://127.0.0.1:3001}
+    secrets: [grafana-admin-password]
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ['127.0.0.1:3001:3000']
+    networks: [observability]
+    logging: *logging
+
+secrets:
+  flat-manager-config:
+    file: /etc/librehub/secrets/flat-manager-config.json
+  flat-manager-db-password:
+    file: /etc/librehub/secrets/flat-manager-db-password
+  grafana-admin-password:
+    file: /etc/librehub/secrets/grafana-admin-password
+
+networks:
+  # Reachable from the host proxy only through loopback-published ports.
+  edge: {}
+  # Database traffic never leaves this network, and it has no route to the host or the internet.
+  manager: {internal: true}
+  observability: {}
+
+volumes:
+  flat-manager-database:
+  flat-manager-state:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

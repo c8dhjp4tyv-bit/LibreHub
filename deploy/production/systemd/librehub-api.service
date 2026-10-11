@@ -1,0 +1,61 @@
+# LibreHub API and build supervisor. Runs as a dedicated, unprivileged account.
+[Unit]
+Description=LibreHub API and control-plane supervisor
+Documentation=file:///usr/share/doc/librehub/production-deployment.md
+After=network-online.target docker.service librehub-builder.service
+Wants=network-online.target
+Requires=docker.service
+# Refuse to start on an unsafe configuration: a failed preflight stops the unit before it binds.
+ExecStartPre=/usr/local/bin/librehub-api --check-config
+
+[Service]
+Type=simple
+User=librehub
+Group=librehub
+EnvironmentFile=/etc/librehub/librehub.env
+ExecStart=/usr/local/bin/librehub-api
+WorkingDirectory=/var/lib/librehub
+# Graceful shutdown: stop admitting work, drain bounded deliveries, release the store lock.
+# The deadline is the documented shutdown budget (docs/operations.md).
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+LimitNOFILE=65536
+TasksMax=1024
+MemoryMax=4G
+CPUQuota=400%
+# Filesystem: read-only except the explicit state and runtime directories.
+RuntimeDirectory=librehub
+ProtectSystem=strict
+ReadWritePaths=/var/lib/librehub /run/librehub
+ReadOnlyPaths=/etc/librehub
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+# Logs go to the journal as JSON (LIBREHUB_LOG_FORMAT=json).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=librehub-api
+
+[Install]
+WantedBy=multi-user.target

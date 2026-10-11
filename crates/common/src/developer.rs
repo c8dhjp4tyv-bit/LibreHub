@@ -49,7 +49,7 @@ pub struct Developer {
     pub updated_at: Timestamp,
     pub status: DeveloperStatus,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Scope {
     #[serde(rename = "projects:read")]
     ProjectsRead,
