@@ -427,14 +427,30 @@ impl OutboundWorker {
             .reclaim_expired_deliveries(self.max_attempts, self.backoff_base)
             .await?;
         // Outbox -> delivery rows (each event atomically with the cursor).
-        let events = self.store.outbox_batch("webhooks", 64).await?;
-        let busy = !events.is_empty();
-        for event in events {
-            self.store
-                .fan_out(event, self.store.automation_limits.max_chain_depth)
-                .await?;
-            crate::fault::barrier(&self.store.data_dir, "after_event_admission").await;
+        let admission: anyhow::Result<bool> = async {
+            let events = self.store.outbox_batch("webhooks", 64).await?;
+            let busy = !events.is_empty();
+            for event in events {
+                self.store
+                    .fan_out(event, self.store.automation_limits.max_chain_depth)
+                    .await?;
+                crate::fault::barrier(&self.store.data_dir, "after_event_admission").await;
+            }
+            Ok(busy)
         }
+        .await;
+        let busy = match admission {
+            Ok(busy) => busy,
+            Err(error) => {
+                let category = classify(&error);
+                if category == FailureCategory::StorageCorrupt {
+                    return Err(error);
+                }
+                self.health.record(category);
+                tracing::warn!(category = category.as_str(), error = %error, "Outbox admission failed; existing deliveries continue and admission will be retried");
+                false
+            }
+        };
         let free = self.concurrency.saturating_sub(tasks.len());
         if free > 0 {
             for delivery in self.store.claim_deliveries(free, self.lease).await? {

@@ -233,6 +233,30 @@ async fn unchanged_or_reordered_policies_have_no_side_effects() {
     );
 }
 
+#[tokio::test]
+async fn repository_display_name_changes_are_saved_without_revoking_credentials() {
+    let mut policy = github_policy();
+    let (mut env, project, connection) = project_with_policy(&policy).await;
+    let token = credential(&env, project, github_claims()).await;
+    for name in [Some("octo/renamed".to_owned()), None] {
+        policy.repository = name.clone();
+        update(&env, project, &connection, json!({"policy": policy})).await;
+        let stored: String = env
+            .db()
+            .query_row(
+                "SELECT policy FROM integration_connections WHERE id=?1",
+                [&connection],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let stored: GithubIdentityPolicy = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored.repository, name);
+        assert!(accepted(&env, project, &token).await);
+        assert_eq!(revoked_audit_entries(&env, project), 0);
+    }
+    env.stop().await;
+}
+
 fn github_policy_with_refs(refs: &[&str]) -> GithubIdentityPolicy {
     let mut policy = github_policy();
     policy.allowed_refs = refs.iter().map(|r| (*r).to_owned()).collect();

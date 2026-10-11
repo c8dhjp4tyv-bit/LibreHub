@@ -7,7 +7,7 @@ The API exposes Prometheus metrics on `LIBREHUB_METRICS_BIND` (default `127.0.0.
 | Metric | Type | Labels | Source |
 | --- | --- | --- | --- |
 | `librehub_build_info` | gauge | `version` | build |
-| `librehub_ready` | gauge | | readiness of this instance |
+| `librehub_database_ready` | gauge | | control-plane database readiness; use `/ready` for full instance readiness |
 | `librehub_http_requests_total` | counter | `route`, `status_class` | every request |
 | `librehub_http_request_duration_seconds` | histogram | `route` | every request |
 | `librehub_process_uptime_seconds` | gauge | | process |
@@ -15,7 +15,8 @@ The API exposes Prometheus metrics on `LIBREHUB_METRICS_BIND` (default `127.0.0.
 | `librehub_outbox_backlog_events` | gauge | | outbox not yet admitted for delivery |
 | `librehub_worker_ready` | gauge | `worker` | outbound, automation, catalog, security |
 | `librehub_worker_degraded` | gauge | `worker`, `reason` | set when a worker stops itself |
-| `librehub_webhook_failures_total` | gauge | `category` | outbound worker failure categories |
+| `librehub_automation_outbox_failures_total` | counter | | failed automation outbox consumption attempts |
+| `librehub_webhook_failures_total` | counter | `category` | outbound worker failure categories |
 | `librehub_database_bytes` | gauge | | SQLite file plus WAL |
 | `librehub_disk_total_bytes`, `librehub_disk_available_bytes` | gauge | | data directory file system |
 
@@ -34,7 +35,7 @@ The webhook failure categories are `task_panic`, `task_cancelled`, `storage_busy
 | Alert | Fires when | First action | Runbook |
 | --- | --- | --- | --- |
 | `LibreHubApiDown` | the scrape fails for 2 minutes | check `systemctl status librehub-api` and the journal | [operations](operations.md#start-stop-status) |
-| `LibreHubNotReady` | `librehub_ready` is 0 for 5 minutes | read `/ready` for the component that is `unavailable` | [operations](operations.md#health-and-readiness) |
+| `LibreHubNotReady` | `librehub_database_ready` is 0 for 5 minutes | investigate database availability; use `/ready` for other components | [operations](operations.md#health-and-readiness) |
 | `LibreHubHighServerErrorRate` | more than 5% of requests fail with 5xx for 10 minutes | read the journal for the failing route | operations |
 | `LibreHubSlowRequests` | p95 latency above 1 s for 15 minutes | check disk latency and the build queue | capacity planning |
 | `LibreHubWorkerNotRunning` | a worker is not running for 5 minutes | restart the service after reading its journal lines | [worker recovery](operations.md#worker-recovery) |

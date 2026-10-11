@@ -51,7 +51,7 @@ install -m 0755 target/release/librehub-api target/release/librehub-admin /usr/l
 
 # 2. Provision the host: service account, directories, secrets, signing key, templates, units.
 #    Secrets are created once and never printed. A second run keeps every existing value.
-deploy/production/scripts/provision.sh "$FLAT_MANAGER_IMAGE_DIGEST" "LibreHub Repository <repo@librehub.example>"
+deploy/production/scripts/provision.sh "$FLAT_MANAGER_IMAGE_DIGEST" "LibreHub Repository <repo@librehub.example>" "https://repo.librehub.example"
 
 # 3. Review the host configuration. Every value is documented in deploy/production/env.example.
 $EDITOR /etc/librehub/librehub.env
@@ -63,7 +63,7 @@ $EDITOR /etc/librehub/librehub.env
 # 5. Start the containers (web, flat-manager, PostgreSQL, monitoring) with pinned digests.
 export LIBREHUB_WEB_IMAGE=... LIBREHUB_FLAT_MANAGER_IMAGE=... LIBREHUB_POSTGRES_IMAGE=...
 export LIBREHUB_PROMETHEUS_IMAGE=... LIBREHUB_ALERTMANAGER_IMAGE=... LIBREHUB_GRAFANA_IMAGE=...
-docker compose -f deploy/production/compose.yaml up -d
+docker compose --env-file /etc/librehub/librehub.env -f deploy/production/compose.yaml up -d
 
 # 6. Install the TLS configuration and reload nginx (the provisioning script installs the files).
 nginx -t && systemctl reload nginx
@@ -75,6 +75,8 @@ systemctl enable --now librehub-api.service librehub-backup.timer
 # 8. Smoke test the public and private listeners.
 deploy/production/scripts/smoke.sh
 ```
+
+Provisioning resolves the default Docker bridge gateway for the API, metrics and nginx upstream. If the daemon sets a custom `host-gateway-ip`, pass the same private IPv4 address as `LIBREHUB_HOST_GATEWAY_IP` to provisioning. On existing installations, update `LIBREHUB_BIND`, `LIBREHUB_METRICS_BIND` and `LIBREHUB_TRUSTED_PROXIES` to match; provisioning preserves the existing environment file. The web API endpoint can be overridden with `LIBREHUB_API_URL`. Replace the example repository origin in the provisioning command and keep `LIBREHUB_PUBLIC_BASE_URL` set to that origin plus `/repo`. Replace the three example hostnames in nginx and install the matching certificates before reloading.
 
 The smoke test checks that `/live` and `/ready` answer, that metrics are served only on the operator listener and refused publicly, that plain HTTP redirects, and that the repository index is served. `/ready` returns 200 only after publishing is configured and the first signed publication exists.
 

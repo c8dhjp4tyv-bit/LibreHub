@@ -46,7 +46,7 @@ Restoring loses every record written after the archive. Record the gap in the in
 
 ## Rollback
 
-A rollback is a restore, not a downgrade. Rolling back to an older binary is refused for any database it cannot open, and it must never be forced with an edited schema. Records created by the newer release (publications, attestations, automation history, audit entries) are never removed by an upgrade or a rollback; they remain in the archive you restore from.
+A rollback is a restore, not a downgrade. Rolling back to an older binary is refused for any database it cannot open, and it must never be forced with an edited schema. Records created by the newer release (publications, attestations, automation history, audit entries) remain after a restore only if the restored archive contains them. Restoring a pre-upgrade archive loses records written afterward.
 
 ## Upgrading the containers
 

@@ -368,7 +368,12 @@ impl Store {
                     // Narrowing any part of the trusted identity (branch, workflow, environment,
                     // event, owner, permission or lifetime) must not leave credentials minted under
                     // the old policy valid. An unchanged policy has no side effects.
-                    revoke_tokens |= existing.normalized() != next;
+                    let mut trusted_existing = existing.normalized();
+                    let mut trusted_next = next.clone();
+                    // Repository names are display-only; numeric IDs establish trust.
+                    trusted_existing.repository = None;
+                    trusted_next.repository = None;
+                    revoke_tokens |= trusted_existing != trusted_next;
                     serde_json::to_string(&next)?
                 }
                 None => current.policy.to_string(),

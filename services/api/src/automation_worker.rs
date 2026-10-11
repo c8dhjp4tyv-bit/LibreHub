@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -53,6 +53,7 @@ pub struct AutomationWorker {
     pub wake: Arc<Notify>,
     pub shutdown: CancellationToken,
     pub running: Arc<AtomicBool>,
+    pub outbox_failures: Arc<AtomicU64>,
     pub scheduler_enabled: bool,
     pub scheduler_running: Arc<AtomicBool>,
 }
@@ -123,6 +124,7 @@ impl AutomationWorker {
             wake: Arc::new(Notify::new()),
             shutdown,
             running: Arc::new(AtomicBool::new(false)),
+            outbox_failures: Arc::new(AtomicU64::new(0)),
             scheduler_enabled: true,
             scheduler_running: Arc::new(AtomicBool::new(false)),
         }
@@ -183,7 +185,15 @@ impl AutomationWorker {
                 tracing::info!(automation_run_id=%run, "Scheduled automation occurrence admitted");
             }
         }
-        self.consume_outbox().await?;
+        if let Err(error) = self.consume_outbox().await {
+            self.outbox_failures.fetch_add(1, Ordering::Relaxed);
+            let category = crate::outbound_worker::classify(&error);
+            tracing::warn!(category = category.as_str(), error = %error, "Automation outbox consumption failed; admission will be retried");
+            if category == crate::outbound_worker::FailureCategory::StorageCorrupt {
+                return Err(error);
+            }
+            // A malformed event must not hold up work already admitted to the store.
+        }
         let ids = self
             .store
             .active_run_ids(self.store.automation_limits.active_runs_global)
@@ -196,8 +206,8 @@ impl AutomationWorker {
                 tasks.spawn(async move { this.advance(id).await });
             }
             while let Some(done) = tasks.join_next().await {
-                // Every run's outcome is settled here, including a panic. The run stays active in the
-                // store, so the next tick retries it; nothing in one run can end the supervisor.
+                // A panic is retried next tick if the run remains non-terminal. Durable writes
+                // before the panic remain committed; nothing in one run can end the supervisor.
                 match done {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {

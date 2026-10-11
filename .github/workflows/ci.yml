@@ -275,10 +275,11 @@ jobs:
           mkdir -p "$work/live/librehub.example"
           openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=librehub.example" \
             -keyout "$work/live/librehub.example/privkey.pem" -out "$work/live/librehub.example/fullchain.pem" 2>/dev/null
+          sed "s/__DOCKER_HOST_GATEWAY__/172.18.0.1/g" deploy/production/proxy/nginx.conf > "$work/nginx.conf"
           docker run --rm \
             -v "$PWD/deploy/production/proxy:/etc/librehub/proxy:ro" \
             -v "$work/live:/etc/letsencrypt/live:ro" \
-            -v "$PWD/deploy/production/proxy/nginx.conf:/etc/nginx/conf.d/librehub.conf:ro" \
+            -v "$work/nginx.conf:/etc/nginx/conf.d/librehub.conf:ro" \
             nginx:1.28.0-alpine nginx -t
       - name: Validate the monitoring rules and dashboard
         run: |

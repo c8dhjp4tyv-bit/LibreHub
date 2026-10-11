@@ -24,7 +24,7 @@ load_env() {
 }
 # The shipped template, with its paths pointed at the stand-ins. Placeholders must be replaced by
 # the operator; CI only needs them to be syntactically valid.
-sed -e "s|/etc/librehub/secrets/|$SECRETS/|g" -e "s|/etc/librehub/public/|$PUBLIC/|g" \
+sed -e "s/__DOCKER_HOST_GATEWAY__/172.18.0.1/g" -e "s|/etc/librehub/secrets/|$SECRETS/|g" -e "s|/etc/librehub/public/|$PUBLIC/|g" \
     -e "s|^LIBREHUB_DATA_DIR=.*|LIBREHUB_DATA_DIR=$DATA|" \
     -e "s|^LIBREHUB_DATABASE_PATH=.*|LIBREHUB_DATABASE_PATH=$DATA/builds.sqlite3|" \
     -e "s|^LIBREHUB_SIGNING_FINGERPRINT=.*|LIBREHUB_SIGNING_FINGERPRINT=0123456789ABCDEF0123456789ABCDEF01234567|" \

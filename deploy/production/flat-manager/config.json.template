@@ -1,7 +1,7 @@
 {
   "host": "0.0.0.0",
   "port": 8080,
-  "base-url": "https://repo.librehub.example/flat-manager",
+  "base-url": "__REPOSITORY_ORIGIN__/flat-manager",
   "database-url": "postgres://librehub:__FLAT_MANAGER_DB_PASSWORD__@flat-manager-database/librehub",
   "secret": "__FLAT_MANAGER_TOKEN_SECRET__",
   "repos": {
@@ -11,7 +11,7 @@
       "collection-id": null,
       "suggested-repo-name": "librehub",
       "runtime-repo-url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
-      "base-url": "https://repo.librehub.example/repo/stable/",
+      "base-url": "__REPOSITORY_ORIGIN__/repo/stable/",
       "subsets": {}
     },
     "beta": {
@@ -20,7 +20,7 @@
       "collection-id": null,
       "suggested-repo-name": "librehub-beta",
       "runtime-repo-url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
-      "base-url": "https://repo.librehub.example/repo/beta/",
+      "base-url": "__REPOSITORY_ORIGIN__/repo/beta/",
       "subsets": {}
     }
   },

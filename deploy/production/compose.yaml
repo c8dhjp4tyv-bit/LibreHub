@@ -25,9 +25,10 @@ services:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: '3000'
-      LIBREHUB_API_URL: http://172.17.0.1:8080
+      LIBREHUB_API_URL: ${LIBREHUB_API_URL:-http://librehub-host:8080}
       LIBREHUB_API_PUBLIC_URL: ${LIBREHUB_API_PUBLIC_URL:?set in .env}
       LIBREHUB_WEB_PUBLIC_URL: ${LIBREHUB_WEB_PUBLIC_URL:?set in .env}
+    extra_hosts: ['librehub-host:host-gateway']
     ports: ['127.0.0.1:3000:3000']
     networks: [edge]
     logging: *logging
@@ -89,7 +90,7 @@ services:
       - ./monitoring/prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
     ports: ['127.0.0.1:9090:9090']
-    extra_hosts: ['librehub-host:172.17.0.1']
+    extra_hosts: ['librehub-host:host-gateway']
     networks: [observability]
     logging: *logging
 

@@ -21,7 +21,10 @@ done
 check test -d /etc/librehub/gpg
 check test -z "$(find /etc/librehub/gpg -perm /077 -not -type d)"
 check nginx -t
-check systemctl is-enabled librehub-backup.timer
+check systemctl cat librehub-backup.timer
+if [ "${1:-}" = --upgrade ]; then
+  check systemctl is-enabled librehub-backup.timer
+fi
 check sh -c "df -P /var/lib/librehub | awk 'NR==2{exit !(\$4>1048576)}'"
 if [ -n "${LIBREHUB_COMPOSE_FILE:-}" ]; then
   check docker compose -f "$LIBREHUB_COMPOSE_FILE" --env-file "${LIBREHUB_COMPOSE_ENV:-/etc/librehub/compose.env}" config --quiet

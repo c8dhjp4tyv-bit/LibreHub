@@ -28,6 +28,7 @@ TasksMax=1024
 MemoryMax=4G
 CPUQuota=400%
 # Filesystem: read-only except the explicit state and runtime directories.
+RuntimeDirectory=librehub
 ProtectSystem=strict
 ReadWritePaths=/var/lib/librehub /run/librehub
 ReadOnlyPaths=/etc/librehub

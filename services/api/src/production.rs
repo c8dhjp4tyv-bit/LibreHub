@@ -65,6 +65,15 @@ pub fn validate(vars: &Vars) -> Result<Environment, Vec<String>> {
         }
         _ => problems.push("LIBREHUB_TRUSTED_PROXIES must list the reverse proxy address; forwarded headers are otherwise ignored".into()),
     }
+    match vars
+        .get("LIBREHUB_BIND")
+        .and_then(|bind| bind.parse::<SocketAddr>().ok())
+    {
+        Some(addr) if is_internal(addr.ip()) => {}
+        _ => problems.push(
+            "LIBREHUB_BIND is required and must be a loopback or private socket address".into(),
+        ),
+    }
     if let Some(bind) = vars.get("LIBREHUB_METRICS_BIND") {
         match bind.parse::<SocketAddr>() {
             Ok(addr) if is_internal(addr.ip()) => {}
@@ -165,6 +174,7 @@ mod tests {
             ("LIBREHUB_DATA_DIR", "/var/lib/librehub"),
             ("LIBREHUB_TRUSTED_PROXIES", "10.20.0.2"),
             ("LIBREHUB_METRICS_BIND", "127.0.0.1:9464"),
+            ("LIBREHUB_BIND", "10.20.0.1:8080"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -292,6 +302,44 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("LIBREHUB_METRICS_BIND"))
         );
+    }
+
+    #[test]
+    fn api_bind_is_required_and_must_be_an_internal_socket() {
+        for bind in [
+            None,
+            Some(""),
+            Some("localhost:8080"),
+            Some("10.0.0.1"),
+            Some("0.0.0.0:8080"),
+            Some("[::]:8080"),
+            Some("8.8.8.8:8080"),
+            Some("[2606:4700::1111]:8080"),
+        ] {
+            let mut vars = production();
+            vars.remove("LIBREHUB_BIND");
+            if let Some(bind) = bind {
+                vars.insert("LIBREHUB_BIND".into(), bind.into());
+            }
+            assert!(
+                problems(&vars)
+                    .iter()
+                    .any(|p| p.starts_with("LIBREHUB_BIND")),
+                "{bind:?}"
+            );
+        }
+        for bind in [
+            "127.0.0.1:8080",
+            "10.1.2.3:8080",
+            "172.18.0.1:8080",
+            "192.168.1.1:8080",
+            "[::1]:8080",
+            "[fd00::1]:8080",
+        ] {
+            let mut vars = production();
+            vars.insert("LIBREHUB_BIND".into(), bind.into());
+            assert_eq!(validate(&vars), Ok(Environment::Production), "{bind}");
+        }
     }
 
     #[test]

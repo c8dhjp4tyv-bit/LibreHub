@@ -11,7 +11,7 @@ VERSION=${3:?usage: upgrade.sh <librehub-api> <librehub-admin> <version>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ENV_FILE=/etc/librehub/librehub.env
 echo "stage 1/7: preflight"
-LIBREHUB_ENV_FILE=$ENV_FILE "$HERE/preflight.sh"
+LIBREHUB_ENV_FILE=$ENV_FILE "$HERE/preflight.sh" --upgrade
 echo "stage 2/7: validate the new binary's configuration before touching anything"
 set -a
 # The environment file is the installed configuration, chosen at run time, so it cannot be followed statically.

@@ -15,7 +15,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "Readiness",
+      "title": "Database readiness",
       "type": "stat",
       "gridPos": {
         "x": 0,
@@ -49,7 +49,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "librehub_ready",
+          "expr": "librehub_database_ready",
           "legendFormat": "ready"
         }
       ]

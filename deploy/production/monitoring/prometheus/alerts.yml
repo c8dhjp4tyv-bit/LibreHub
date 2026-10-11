@@ -14,11 +14,11 @@ groups:
           runbook: docs/operations.md#api-unavailable
 
       - alert: LibreHubNotReady
-        expr: librehub_ready == 0
+        expr: librehub_database_ready == 0
         for: 5m
         labels: {severity: critical}
         annotations:
-          summary: LibreHub reports itself not ready (database, publishing or a required worker)
+          summary: LibreHub reports its control-plane database is not ready
           runbook: docs/operations.md#readiness
 
       - alert: LibreHubHighServerErrorRate
@@ -137,7 +137,7 @@ groups:
         for: 5m
         labels: {severity: critical}
         annotations:
-          summary: Less than 3% of the data directory's disk is free; new builds are being refused
+          summary: Less than 3% of the data directory's disk is free
           runbook: docs/operations.md#disk-exhaustion
 
       - alert: LibreHubDatabaseLarge
@@ -150,7 +150,7 @@ groups:
   - name: librehub-backups
     rules:
       - alert: LibreHubBackupStale
-        # Requires the node exporter textfile collector to read /var/lib/prometheus/textfile/librehub.prom,
+        # Requires the node exporter textfile collector to read /var/lib/prometheus/textfile/librehub-backup.prom,
         # which scripts/librehub-backup.sh writes after every successful run. See docs/backups.md.
         expr: time() - librehub_backup_last_success_timestamp_seconds > 26 * 3600
         for: 30m

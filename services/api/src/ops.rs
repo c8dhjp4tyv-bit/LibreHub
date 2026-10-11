@@ -291,11 +291,16 @@ pub fn render(
     );
     header(
         &mut out,
-        "librehub_ready",
+        "librehub_database_ready",
         "gauge",
-        "1 when this instance can serve its intended role.",
+        "1 when the control-plane database is ready; full readiness is reported by /ready.",
     );
-    sample(&mut out, "librehub_ready", &[], f64::from(u8::from(ready)));
+    sample(
+        &mut out,
+        "librehub_database_ready",
+        &[],
+        f64::from(u8::from(ready)),
+    );
     telemetry.render_http(&mut out);
     header(
         &mut out,
@@ -430,7 +435,24 @@ async fn collect(state: &OpsState, data_dir: PathBuf) -> Result<String, anyhow::
     if let Some(security) = &state.security {
         workers.push(("security", security.ready().await, None, vec![]));
     }
-    Ok(render(&state.telemetry, &snapshot, &workers, database))
+    let mut output = render(&state.telemetry, &snapshot, &workers, database);
+    if let Some(automation) = &state.automation {
+        header(
+            &mut output,
+            "librehub_automation_outbox_failures_total",
+            "counter",
+            "Failed automation outbox consumption attempts.",
+        );
+        sample(
+            &mut output,
+            "librehub_automation_outbox_failures_total",
+            &[],
+            automation
+                .outbox_failures
+                .load(std::sync::atomic::Ordering::Relaxed) as f64,
+        );
+    }
+    Ok(output)
 }
 
 async fn metrics(State(state): State<OpsState>) -> Response {
@@ -489,7 +511,7 @@ mod tests {
         assert!(text.contains(
             r#"librehub_http_request_duration_seconds_bucket{route="unmatched",le="+Inf"} 1"#
         ));
-        assert!(text.contains("librehub_ready 1"));
+        assert!(text.contains("librehub_database_ready 1"));
         let mut escaped = String::new();
         sample(&mut escaped, "m", &[("route", "a\"b\\c")], 1.0);
         assert_eq!(escaped, "m{route=\"a\\\"b\\\\c\"} 1\n");
@@ -514,6 +536,6 @@ mod tests {
             )
         );
         assert!(text.contains(r#"librehub_webhook_failures_total{category="task_panic"} 2"#));
-        assert!(text.contains("librehub_ready 0"));
+        assert!(text.contains("librehub_database_ready 0"));
     }
 }
