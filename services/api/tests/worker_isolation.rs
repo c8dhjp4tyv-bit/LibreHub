@@ -149,7 +149,11 @@ async fn a_malformed_outbox_event_is_quarantined_and_later_work_continues() {
     assert_eq!(consumer_count, 2);
     let quarantined_events: i64 = env
         .db()
-        .query_row("SELECT count(DISTINCT seq) FROM outbox_quarantine", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(DISTINCT seq) FROM outbox_quarantine",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(quarantined_events, 2);
     assert!(
