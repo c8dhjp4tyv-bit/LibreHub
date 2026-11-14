@@ -16,7 +16,7 @@ pub const MAX_LOG_ENTRIES: u64 = 10_000;
 pub const MAX_PENDING_BUILDS: usize = 64;
 
 /// Highest schema version this release understands. Opening a newer database is refused.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Clone)]
 pub struct Store {
@@ -139,6 +139,7 @@ impl Store {
         db.execute_batch(
             "CREATE INDEX IF NOT EXISTS integration_deliveries_lease ON integration_deliveries(lease_expires_at) WHERE status='delivering';",
         )?;
+        db.execute_batch(include_str!("../migrations/009_outbox_quarantine.sql"))?;
         db.execute_batch(&format!(
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES({SCHEMA_VERSION});"
         ))?;

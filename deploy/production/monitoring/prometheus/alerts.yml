@@ -115,6 +115,14 @@ groups:
         annotations:
           summary: Outbound webhook task failures are rising; check the logs for the failure category
 
+      - alert: LibreHubOutboxQuarantine
+        expr: librehub_outbox_quarantined_events > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Consumer {{ $labels.consumer }} skipped malformed persisted outbox records; inspect retained events"
+          runbook: docs/operations.md#outbox-quarantine
+
       - alert: LibreHubOutboxBacklog
         expr: librehub_outbox_backlog_events > 1000
         for: 15m
